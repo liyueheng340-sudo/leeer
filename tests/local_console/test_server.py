@@ -1,0 +1,102 @@
+from __future__ import annotations
+
+import http.client
+import json
+import tempfile
+import threading
+import unittest
+from datetime import UTC, datetime
+from pathlib import Path
+
+from local_console.config import ConsoleConfig
+from local_console.server import make_server
+from local_console.service import ConsoleService
+
+
+def fake_snapshot(_config: ConsoleConfig, _job_id: str) -> dict[str, object]:
+    return {
+        "timestamp": datetime.now(UTC).isoformat(),
+        "identity_match": True,
+        "symbol": "XAUUSD",
+        "bid": 4000.0,
+        "ask": 4000.1,
+    }
+
+
+def fake_brief(_config: ConsoleConfig, _kind: str, _snapshot: dict[str, object], _gate: object) -> object:
+    return {
+        "action": "ANALYSE",
+        "source_ids": ["mt5_snapshot", "verified_event_context"],
+        "summary": "这是测试报告。",
+        "invalidation": "后续快照会替代它。",
+        "next_observation": "M1 收盘后刷新。",
+    }
+
+
+class ServerTests(unittest.TestCase):
+    def test_server_refuses_non_localhost_binding(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = ConsoleConfig(
+                repo_root=root,
+                state_dir=root / "runtime",
+                mt5_python=root / "python.exe",
+                mt5_snapshot_script=root / "snapshot.py",
+                backend_url="https://example.invalid/v1",
+                quick_model="quick",
+                deep_model="deep",
+                host="0.0.0.0",
+            )
+
+            with self.assertRaisesRegex(ValueError, "127.0.0.1"):
+                make_server(config)
+
+    def test_job_api_returns_a_queued_job_with_durable_progress(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = ConsoleConfig(
+                repo_root=root,
+                state_dir=root / "runtime",
+                mt5_python=root / "python.exe",
+                mt5_snapshot_script=root / "snapshot.py",
+                backend_url="https://example.invalid/v1",
+                quick_model="quick",
+                deep_model="deep",
+                port=0,
+            )
+            service = ConsoleService(
+                config,
+                snapshot_runner=fake_snapshot,
+                event_loader=lambda _path: {"status": "verified_clear"},
+                brief_runner=fake_brief,
+            )
+            server = make_server(config, service)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                port = server.server_address[1]
+                created = request_json(port, "POST", "/api/jobs", {"kind": "brief"})
+                current = request_json(port, "GET", f"/api/jobs/{created['id']}")
+            finally:
+                server.shutdown()
+                thread.join(timeout=2)
+                server.server_close()
+                service.close()
+
+        self.assertEqual("QUEUED", created["stage"])
+        self.assertIn(current["stage"], {"QUEUED", "SNAPSHOT", "GATE", "MODEL", "VALIDATE", "COMPLETE"})
+        self.assertIn("events", current)
+        self.assertIsInstance(current["elapsed_seconds"], float)
+
+
+def request_json(port: int, method: str, path: str, body: dict[str, object] | None = None) -> dict[str, object]:
+    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+    payload = None if body is None else json.dumps(body)
+    headers = {} if payload is None else {"Content-Type": "application/json"}
+    connection.request(method, path, body=payload, headers=headers)
+    response = connection.getresponse()
+    result = json.loads(response.read().decode("utf-8"))
+    connection.close()
+    if response.status not in {200, 202}:
+        raise AssertionError(result)
+    return result

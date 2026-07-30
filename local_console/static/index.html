@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <title>XAU 分析控制台</title>
+    <link rel="stylesheet" href="/static/app.css">
+  </head>
+  <body>
+    <div class="ambient" aria-hidden="true"></div>
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="XAU Analysis Console 首页">
+        <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+        <span>
+          <strong>XAU</strong>
+          <small>分析控制台</small>
+        </span>
+      </a>
+      <div class="topbar-meta">
+        <span class="source-chip"><i class="dot"></i>BITGET MT5 · 只读</span>
+        <span id="system-time" class="mono">本机服务就绪</span>
+      </div>
+    </header>
+
+    <main class="shell">
+      <section class="hero">
+        <div>
+          <p class="eyebrow">人工研判</p>
+          <h1>读盘、事件、判断，<em>都要能追溯。</em></h1>
+          <p class="hero-copy">刷新 Bitget MT5 快照后再分析。这里不给交易指令，不碰账户，只给你看得懂的事实、状态和下一步观察条件。</p>
+        </div>
+        <div class="hero-actions" aria-label="分析操作">
+          <button id="start-brief" class="button button-primary" type="button">
+            <span class="button-icon" aria-hidden="true">↗</span>
+            刷新 MT5 并生成简报
+          </button>
+          <button id="start-deep-review" class="button button-secondary" type="button">
+            深度复盘
+            <span class="button-note">Qwen 3.8</span>
+          </button>
+        </div>
+      </section>
+
+      <section class="status-strip" aria-label="控制台状态">
+        <div class="status-item">
+          <span>数据源</span>
+          <strong id="source-status">等待 MT5 快照</strong>
+        </div>
+        <div class="status-item">
+          <span>事件上下文</span>
+          <strong id="event-status">未核验</strong>
+        </div>
+        <div class="status-item">
+          <span>行动状态</span>
+            <strong id="action-status">观察</strong>
+        </div>
+        <div class="status-item">
+          <span>模型</span>
+          <strong id="model-status">Qwen 就绪检查中</strong>
+        </div>
+      </section>
+
+      <section class="market-grid" aria-label="市场快照">
+        <article class="panel price-panel">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">XAUUSD</p>
+              <h2>当前报价</h2>
+            </div>
+            <span id="snapshot-age" class="badge badge-muted">无快照</span>
+          </div>
+          <div class="price-row">
+            <div><span>BID</span><strong id="bid" class="price mono">—</strong></div>
+            <div><span>ASK</span><strong id="ask" class="price mono">—</strong></div>
+          </div>
+          <div class="panel-footer">
+            <span>点差 <strong id="spread" class="mono">—</strong></span>
+            <span id="snapshot-time" class="mono">尚未读取</span>
+          </div>
+        </article>
+
+        <article class="panel structure-panel">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">市场结构</p>
+              <h2>多周期结构</h2>
+            </div>
+            <span class="panel-hint">已收 K 线</span>
+          </div>
+          <div id="structure-grid" class="structure-grid">
+            <div class="structure-row"><span>M1</span><strong>等待快照</strong><i></i></div>
+            <div class="structure-row"><span>M5</span><strong>等待快照</strong><i></i></div>
+            <div class="structure-row"><span>M15</span><strong>等待快照</strong><i></i></div>
+          </div>
+        </article>
+
+        <article class="panel risk-panel">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">事实闸门</p>
+              <h2>事实闸门</h2>
+            </div>
+            <span id="gate-badge" class="badge badge-watch">观察</span>
+          </div>
+          <p id="gate-reason" class="risk-copy">事件上下文尚未核验。系统只允许观察型简报。</p>
+          <div class="risk-rule"><span>规则</span><strong>先验证，后分析</strong></div>
+        </article>
+      </section>
+
+      <section class="analysis-grid">
+        <article class="panel decision-panel">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">当前研判</p>
+              <h2>当前行动</h2>
+            </div>
+            <span id="decision-state" class="decision-state">观察</span>
+          </div>
+          <p id="decision-summary" class="decision-summary">点击“刷新 MT5 并生成简报”开始。系统会先取新的 MT5 快照，再决定是否允许模型分析。</p>
+          <dl class="decision-details">
+            <div><dt>失效条件</dt><dd id="invalidation">尚无报告</dd></div>
+            <div><dt>下一观察</dt><dd id="next-observation">获取第一份新快照</dd></div>
+          </dl>
+        </article>
+
+        <article id="job-progress" class="panel progress-panel" aria-live="polite" aria-label="分析任务进度">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">分析流程</p>
+              <h2>任务进度</h2>
+            </div>
+            <span id="job-elapsed" class="mono panel-hint">尚未开始</span>
+          </div>
+          <div id="progress-stages" class="progress-stages">
+            <div class="progress-stage"><i></i><span>等待任务</span><small>点击按钮开始</small></div>
+          </div>
+          <p id="job-detail" class="progress-detail">浏览器会读取服务端任务记录，刷新页面后进度仍然存在。</p>
+        </article>
+      </section>
+
+      <section class="history-section">
+        <div class="section-heading">
+          <div><p class="eyebrow">研究记录</p><h2>分析历史</h2></div>
+          <span>只展示经事实闸门处理后的状态</span>
+        </div>
+        <div id="history" class="history-list"><p class="empty-state">没有历史任务。</p></div>
+      </section>
+    </main>
+
+    <template id="history-item-template">
+      <article class="history-item">
+        <span class="history-state mono"></span>
+        <div><strong class="history-kind"></strong><p class="history-detail"></p></div>
+        <time class="history-time mono"></time>
+      </article>
+    </template>
+    <script src="/static/app.js" defer></script>
+  </body>
+</html>

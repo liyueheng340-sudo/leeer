@@ -28,7 +28,7 @@ class GateTests(unittest.TestCase):
         )
 
         self.assertEqual("BLOCKED", result.action)
-        self.assertEqual("MT5 snapshot is older than 60 seconds", result.reason)
+        self.assertEqual("MT5 快照已超过 60 秒", result.reason)
         self.assertFalse(result.allow_model)
 
     def test_unverified_events_force_watch_with_no_directional_plan(self):
@@ -45,10 +45,10 @@ class GateTests(unittest.TestCase):
     def test_event_wait_blocks_model_request(self):
         result = evaluate_gate(
             fresh_snapshot(),
-            {"status": "wait", "reason": "High-impact event window"},
+            {"status": "wait", "reason": "高影响事件窗口"},
             datetime(2026, 7, 30, 0, 1, 45, tzinfo=UTC),
         )
 
         self.assertEqual("WAIT", result.action)
-        self.assertEqual("High-impact event window", result.reason)
+        self.assertEqual("高影响事件窗口", result.reason)
         self.assertFalse(result.allow_model)

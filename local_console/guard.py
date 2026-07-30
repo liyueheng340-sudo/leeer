@@ -27,17 +27,17 @@ def evaluate_gate(
     snapshot: dict[str, object], event_context: dict[str, object], now: datetime
 ) -> GateResult:
     if snapshot.get("identity_match") is not True or snapshot.get("symbol") != "XAUUSD":
-        return GateResult("BLOCKED", False, False, "MT5 broker or symbol identity mismatch")
+        return GateResult("BLOCKED", False, False, "MT5 经纪商或品种身份不匹配")
     if not valid_quote(snapshot):
-        return GateResult("BLOCKED", False, False, "MT5 quote is unavailable")
+        return GateResult("BLOCKED", False, False, "MT5 报价不可用")
     if snapshot_age_seconds(snapshot, now) > 60:
-        return GateResult("BLOCKED", False, False, "MT5 snapshot is older than 60 seconds")
+        return GateResult("BLOCKED", False, False, "MT5 快照已超过 60 秒")
     if event_context.get("status") == "wait":
-        reason = str(event_context.get("reason") or "Verified high-impact event window")
+        reason = str(event_context.get("reason") or "已核验的高影响事件窗口")
         return GateResult("WAIT", False, False, reason)
     if event_context.get("status") != "verified_clear":
-        return GateResult("WATCH", True, False, "Event context is unverified")
-    return GateResult("ANALYSE", True, True, "Fresh MT5 snapshot and verified event context")
+        return GateResult("WATCH", True, False, "事件上下文未核验")
+    return GateResult("ANALYSE", True, True, "MT5 快照新鲜且事件状态已核验")
 
 
 def valid_quote(snapshot: dict[str, object]) -> bool:
@@ -72,4 +72,3 @@ def load_event_context(path: Path) -> dict[str, object]:
     if not isinstance(payload, dict) or payload.get("status") not in {"verified_clear", "wait"}:
         return {"status": "unverified"}
     return payload
-

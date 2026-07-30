@@ -23,7 +23,7 @@ class ConsoleConfig:
     quick_model: str
     deep_model: str
     host: str = "127.0.0.1"
-    port: int = 8765
+    port: int = 8767
 
     @classmethod
     def from_repo(cls, repo_root: Path | None = None) -> "ConsoleConfig":
@@ -54,4 +54,3 @@ class ConsoleConfig:
     @property
     def event_context_path(self) -> Path:
         return self.state_dir / "event_context.json"
-

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
@@ -47,6 +47,7 @@ class JobRecord:
     snapshot: dict[str, object] | None = None
     gate: dict[str, object] | None = None
     report: dict[str, object] | None = None
+    events: list[dict[str, str]] = field(default_factory=list)
 
     @property
     def elapsed_seconds(self) -> float:
@@ -68,7 +69,17 @@ class JobStore:
         if kind not in {"brief", "deep_review"}:
             raise ValueError(f"unsupported job kind: {kind}")
         now = utc_now()
-        return self._write(JobRecord(uuid4().hex, kind, "QUEUED", now, now, "Queued"))
+        return self._write(
+            JobRecord(
+                uuid4().hex,
+                kind,
+                "QUEUED",
+                now,
+                now,
+                "任务已创建",
+                events=[{"stage": "QUEUED", "at": now, "detail": "任务已创建"}],
+            )
+        )
 
     def get(self, job_id: str) -> JobRecord:
         path = self._path(job_id)
@@ -76,11 +87,26 @@ class JobStore:
             raise KeyError(job_id)
         payload = json.loads(path.read_text(encoding="utf-8"))
         payload.pop("elapsed_seconds", None)
+        payload.setdefault("events", [])
         return JobRecord(**payload)
 
     def list_recent(self, limit: int = 20) -> list[JobRecord]:
         records = [self.get(path.stem) for path in self.root.glob("*.json")]
         return sorted(records, key=lambda record: record.created_at, reverse=True)[:limit]
+
+    def fail_stale_jobs(self, max_age_seconds: float, now: datetime | None = None) -> int:
+        reference = now or datetime.now(UTC)
+        failed = 0
+        for path in self.root.glob("*.json"):
+            record = self.get(path.stem)
+            if record.stage in TERMINAL_STAGES:
+                continue
+            updated = datetime.fromisoformat(record.updated_at)
+            if (reference - updated).total_seconds() <= max_age_seconds:
+                continue
+            self.transition(record.id, "FAILED", "模型响应超时，请重新发起分析")
+            failed += 1
+        return failed
 
     def transition(self, job_id: str, stage: JobStage, detail: str, **updates: object) -> JobRecord:
         if stage not in VALID_STAGES:
@@ -91,6 +117,7 @@ class JobStore:
         record.stage = stage
         record.detail = detail
         record.updated_at = utc_now()
+        record.events.append({"stage": stage, "at": record.updated_at, "detail": detail})
         for key, value in updates.items():
             if key not in {"snapshot", "gate", "report"}:
                 raise ValueError(f"unsupported job update: {key}")
