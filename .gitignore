@@ -149,6 +149,7 @@ activemq-data/
 
 # Environments
 .env
+data_cache/xau_analysis_console/
 .envrc
 .venv
 env/
