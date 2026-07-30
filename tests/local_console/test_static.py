@@ -42,6 +42,7 @@ class StaticConsoleTests(unittest.TestCase):
         self.assertIn("terminalFailure ? STAGES.length - 1", script)
         self.assertIn("jobDisplayState(job)", script)
         self.assertIn('byId("decision-state").textContent = "失败"', script)
+        self.assertIn('["FAILED", "REJECTED"].includes(stage)', script)
 
     def test_dashboard_hides_legacy_english_reports(self):
         script = (STATIC / "app.js").read_text(encoding="utf-8")
@@ -49,3 +50,10 @@ class StaticConsoleTests(unittest.TestCase):
         self.assertIn("reportIsChinese", script)
         self.assertIn("历史报告不符合当前中文输出标准", script)
         self.assertIn("事件上下文未核验", script)
+
+    def test_history_escapes_model_controlled_failure_details(self):
+        script = (STATIC / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn("function escapeHtml(value)", script)
+        self.assertIn("${escapeHtml(detailText(job.detail))}", script)
+        self.assertIn('escapeHtml(errorText(error, "无法读取历史任务', script)

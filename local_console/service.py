@@ -53,9 +53,11 @@ class ConsoleService:
             return record
 
     def get(self, job_id: str) -> JobRecord:
+        self.store.fail_stale_jobs(MODEL_TIMEOUT_SECONDS)
         return self.store.get(job_id)
 
     def history(self) -> list[JobRecord]:
+        self.store.fail_stale_jobs(MODEL_TIMEOUT_SECONDS)
         return self.store.list_recent()
 
     def close(self) -> None:
@@ -82,4 +84,13 @@ class ConsoleService:
             accepted, reason, report = validate_report(payload, gate)
             self.store.transition(job_id, "COMPLETE" if accepted else "REJECTED", reason, report=report)
         except Exception:
-            self.store.transition(job_id, "FAILED", "分析任务失败")
+            current = self.store.get(job_id)
+            if current.stage in TERMINAL_STAGES:
+                return
+            detail = {
+                "SNAPSHOT": "无法读取 MT5 快照，请确认 MT5 已登录并保持运行",
+                "GATE": "无法校验市场事实，请重新发起分析",
+                "MODEL": "Qwen 分析失败，请稍后重新发起",
+                "VALIDATE": "报告校验失败，请重新发起分析",
+            }.get(current.stage, "分析任务失败，请重新发起")
+            self.store.transition(job_id, "FAILED", detail)

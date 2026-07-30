@@ -95,6 +95,46 @@ class ConsoleServiceTests(unittest.TestCase):
 
         self.assertEqual("FAILED", recovered.stage)
 
+    def test_polling_recovers_a_job_that_becomes_stale_after_startup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = test_config(Path(directory))
+            service = ConsoleService(config)
+            try:
+                job = service.store.create("brief")
+                record = service.store.get(job.id)
+                record.stage = "MODEL"
+                record.updated_at = "2000-01-01T00:00:00+00:00"
+                service.store._write(record)
+
+                recovered = service.get(job.id)
+            finally:
+                service.close()
+
+        self.assertEqual("FAILED", recovered.stage)
+        self.assertEqual("模型响应超时，请重新发起分析", recovered.detail)
+
+    def test_snapshot_failure_has_a_clear_chinese_recovery_message(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = test_config(Path(directory))
+
+            def broken_snapshot(_config: ConsoleConfig, _job_id: str) -> dict[str, object]:
+                raise RuntimeError("private implementation detail")
+
+            service = ConsoleService(config, snapshot_runner=broken_snapshot)
+            try:
+                created = service.start("brief")
+                deadline = time.monotonic() + 2
+                current = service.get(created.id)
+                while current.stage not in {"COMPLETE", "REJECTED", "FAILED"} and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                    current = service.get(created.id)
+            finally:
+                service.close()
+
+        self.assertEqual("FAILED", current.stage)
+        self.assertEqual("无法读取 MT5 快照，请确认 MT5 已登录并保持运行", current.detail)
+        self.assertNotIn("private", current.detail)
+
     def test_brief_job_exposes_durable_stage_progress(self):
         with tempfile.TemporaryDirectory() as directory:
             config = test_config(Path(directory))

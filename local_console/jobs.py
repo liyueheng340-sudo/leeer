@@ -6,6 +6,7 @@ import json
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+from threading import RLock
 from typing import Literal
 from uuid import uuid4
 
@@ -64,6 +65,7 @@ class JobStore:
     def __init__(self, root: Path):
         self.root = root
         self.root.mkdir(parents=True, exist_ok=True)
+        self._transition_lock = RLock()
 
     def create(self, kind: JobKind) -> JobRecord:
         if kind not in {"brief", "deep_review"}:
@@ -95,34 +97,36 @@ class JobStore:
         return sorted(records, key=lambda record: record.created_at, reverse=True)[:limit]
 
     def fail_stale_jobs(self, max_age_seconds: float, now: datetime | None = None) -> int:
-        reference = now or datetime.now(UTC)
-        failed = 0
-        for path in self.root.glob("*.json"):
-            record = self.get(path.stem)
-            if record.stage in TERMINAL_STAGES:
-                continue
-            updated = datetime.fromisoformat(record.updated_at)
-            if (reference - updated).total_seconds() <= max_age_seconds:
-                continue
-            self.transition(record.id, "FAILED", "模型响应超时，请重新发起分析")
-            failed += 1
-        return failed
+        with self._transition_lock:
+            reference = now or datetime.now(UTC)
+            failed = 0
+            for path in self.root.glob("*.json"):
+                record = self.get(path.stem)
+                if record.stage in TERMINAL_STAGES:
+                    continue
+                updated = datetime.fromisoformat(record.updated_at)
+                if (reference - updated).total_seconds() <= max_age_seconds:
+                    continue
+                self.transition(record.id, "FAILED", "模型响应超时，请重新发起分析")
+                failed += 1
+            return failed
 
     def transition(self, job_id: str, stage: JobStage, detail: str, **updates: object) -> JobRecord:
-        if stage not in VALID_STAGES:
-            raise ValueError(f"unsupported job stage: {stage}")
-        record = self.get(job_id)
-        if record.stage in TERMINAL_STAGES:
-            raise ValueError("terminal jobs cannot transition")
-        record.stage = stage
-        record.detail = detail
-        record.updated_at = utc_now()
-        record.events.append({"stage": stage, "at": record.updated_at, "detail": detail})
-        for key, value in updates.items():
-            if key not in {"snapshot", "gate", "report"}:
-                raise ValueError(f"unsupported job update: {key}")
-            setattr(record, key, value)
-        return self._write(record)
+        with self._transition_lock:
+            if stage not in VALID_STAGES:
+                raise ValueError(f"unsupported job stage: {stage}")
+            record = self.get(job_id)
+            if record.stage in TERMINAL_STAGES:
+                raise ValueError("terminal jobs cannot transition")
+            record.stage = stage
+            record.detail = detail
+            record.updated_at = utc_now()
+            record.events.append({"stage": stage, "at": record.updated_at, "detail": detail})
+            for key, value in updates.items():
+                if key not in {"snapshot", "gate", "report"}:
+                    raise ValueError(f"unsupported job update: {key}")
+                setattr(record, key, value)
+            return self._write(record)
 
     def _path(self, job_id: str) -> Path:
         if not job_id.isalnum():

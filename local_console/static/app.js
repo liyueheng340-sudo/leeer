@@ -41,6 +41,12 @@ function errorText(error, fallback) {
   return /[\u4e00-\u9fff]/.test(message) ? message : fallback;
 }
 
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, (character) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  })[character]);
+}
+
 function jobDisplayState(job) {
   if (job.stage === "FAILED" || job.stage === "REJECTED") return job.stage;
   return job.gate?.action || "WATCH";
@@ -151,8 +157,9 @@ function renderSnapshot(snapshot) {
 }
 
 function renderGate(gate, stage) {
-  const action = stage === "FAILED" ? "BLOCKED" : gate?.action || "WATCH";
-  const reason = reasonText(gate?.reason || (stage === "FAILED" ? "任务未完成，请查看任务进度。" : ""));
+  const terminalFailure = ["FAILED", "REJECTED"].includes(stage);
+  const action = terminalFailure ? stage : gate?.action || "WATCH";
+  const reason = reasonText(gate?.reason || (terminalFailure ? "任务未完成，请查看任务进度。" : ""));
   const badge = byId("gate-badge");
   badge.textContent = actionLabel(action);
   badge.className = `badge ${classFor(action)}`;
@@ -163,12 +170,13 @@ function renderGate(gate, stage) {
 
 function renderDecision(job) {
   const report = reportIsChinese(job.report) ? job.report : null;
-  const action = job.stage === "FAILED" ? "BLOCKED" : report?.action || job.gate?.action || "WATCH";
+  const terminalFailure = ["FAILED", "REJECTED"].includes(job.stage);
+  const action = terminalFailure ? job.stage : report?.action || job.gate?.action || "WATCH";
   const state = byId("decision-state");
   state.textContent = actionLabel(action);
   state.className = `decision-state ${classFor(action)}`;
   const historicalEnglishReport = job.report && !report;
-  byId("decision-summary").textContent = report?.summary || (historicalEnglishReport ? "历史报告不符合当前中文输出标准，请重新生成分析。" : reasonText(job.gate?.reason) || detailText(job.detail) || "等待分析。");
+  byId("decision-summary").textContent = report?.summary || (historicalEnglishReport ? "历史报告不符合当前中文输出标准，请重新生成分析。" : terminalFailure ? detailText(job.detail) : reasonText(job.gate?.reason) || detailText(job.detail) || "等待分析。");
   byId("invalidation").textContent = report?.invalidation || "数据过期、身份不匹配或事件状态变化时失效。";
   byId("next-observation").textContent = report?.next_observation || "刷新 MT5 快照并确认事件状态。";
 }
@@ -208,11 +216,11 @@ async function refreshHistory() {
     container.innerHTML = history.jobs.map((job) => `
       <article class="history-item">
         <span class="history-state ${classFor(jobDisplayState(job))}">${actionLabel(jobDisplayState(job))}</span>
-        <div><strong>${job.kind === "deep_review" ? "深度复盘" : "实时简报"}</strong><p class="history-detail">${detailText(job.detail)}</p></div>
+        <div><strong>${job.kind === "deep_review" ? "深度复盘" : "实时简报"}</strong><p class="history-detail">${escapeHtml(detailText(job.detail))}</p></div>
         <time class="history-time mono">${formatTime(job.created_at)}</time>
       </article>`).join("");
   } catch (error) {
-    container.innerHTML = `<p class="empty-state">${errorText(error, "无法读取历史任务，请确认本机服务正在运行。")}</p>`;
+    container.innerHTML = `<p class="empty-state">${escapeHtml(errorText(error, "无法读取历史任务，请确认本机服务正在运行。"))}</p>`;
   }
 }
 
