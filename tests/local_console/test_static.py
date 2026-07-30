@@ -24,7 +24,7 @@ class StaticConsoleTests(unittest.TestCase):
         self.assertIn("setControlsBusy(!TERMINAL.has(job.stage))", script)
         self.assertIn("pollJob(status.latest_job.id)", script)
         self.assertIn('catch (error) {', script)
-        self.assertIn('无法读取历史任务，请稍后重试。', script)
+        self.assertIn('无法读取历史任务，请确认本机服务正在运行。', script)
 
     def test_dashboard_boots_from_one_durable_server_state(self):
         script = (STATIC / "app.js").read_text(encoding="utf-8")
