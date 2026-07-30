@@ -7,7 +7,7 @@ const STAGES = [
   ["COMPLETE", "分析完成"],
 ];
 const TERMINAL = new Set(["COMPLETE", "REJECTED", "FAILED"]);
-const ACTION_LABELS = { ANALYSE: "分析", WATCH: "观察", WAIT: "等待", BLOCKED: "阻断", FAILED: "失败" };
+const ACTION_LABELS = { ANALYSE: "分析", WATCH: "观察", WAIT: "等待", BLOCKED: "阻断", REJECTED: "拒绝", FAILED: "失败" };
 const DETAIL_LABELS = { Queued: "任务已创建", "report accepted": "报告已验收" };
 const REASON_LABELS = {
   "Event context is unverified": "事件上下文未核验",
@@ -34,6 +34,16 @@ function detailText(detail) {
 
 function reasonText(reason) {
   return REASON_LABELS[reason] || reason || "等待新的 MT5 快照与事件状态。";
+}
+
+function errorText(error, fallback) {
+  const message = error?.message || "";
+  return /[\u4e00-\u9fff]/.test(message) ? message : fallback;
+}
+
+function jobDisplayState(job) {
+  if (job.stage === "FAILED" || job.stage === "REJECTED") return job.stage;
+  return job.gate?.action || "WATCH";
 }
 
 function reportIsChinese(report) {
@@ -66,11 +76,10 @@ async function startJob(kind) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ kind }),
     });
-    sessionStorage.setItem('xau-analysis-job-id', job.id);
     renderJob(job);
     pollJob(job.id);
   } catch (error) {
-    renderFailure(error.message);
+    renderFailure(errorText(error, "无法启动分析，请确认本机服务正在运行。"));
   }
 }
 
@@ -86,9 +95,7 @@ function pollJob(jobId) {
         refreshHistory();
       }
     } catch (error) {
-      renderFailure(error.message || "无法读取任务状态");
-      window.clearInterval(pollingTimer);
-      setControlsBusy(false);
+      renderFailure(errorText(error, "无法读取任务状态，请确认本机服务正在运行。"));
     }
   }, 1000);
 }
@@ -107,13 +114,13 @@ function renderJob(job) {
   renderSnapshot(job.snapshot);
   renderGate(job.gate, job.stage);
   renderDecision(job);
-  if (TERMINAL.has(job.stage)) sessionStorage.removeItem('xau-analysis-job-id');
 }
 
 function renderProgress(job) {
-  const currentIndex = STAGES.findIndex(([stage]) => stage === job.stage);
+  const terminalFailure = job.stage === "REJECTED" || job.stage === "FAILED";
+  const currentIndex = terminalFailure ? STAGES.length - 1 : STAGES.findIndex(([stage]) => stage === job.stage);
   const events = new Map((job.events || []).map((event) => [event.stage, event]));
-  const stages = job.stage === "REJECTED" || job.stage === "FAILED"
+  const stages = terminalFailure
     ? [...STAGES.slice(0, -1), [job.stage, job.stage === "REJECTED" ? "报告被拒绝" : "任务失败"]]
     : STAGES;
   byId("progress-stages").innerHTML = stages.map(([stage, label], index) => {
@@ -144,7 +151,7 @@ function renderSnapshot(snapshot) {
 }
 
 function renderGate(gate, stage) {
-  const action = gate?.action || (stage === "FAILED" ? "BLOCKED" : "WATCH");
+  const action = stage === "FAILED" ? "BLOCKED" : gate?.action || "WATCH";
   const reason = reasonText(gate?.reason || (stage === "FAILED" ? "任务未完成，请查看任务进度。" : ""));
   const badge = byId("gate-badge");
   badge.textContent = actionLabel(action);
@@ -156,7 +163,7 @@ function renderGate(gate, stage) {
 
 function renderDecision(job) {
   const report = reportIsChinese(job.report) ? job.report : null;
-  const action = report?.action || job.gate?.action || (job.stage === "FAILED" ? "BLOCKED" : "WATCH");
+  const action = job.stage === "FAILED" ? "BLOCKED" : report?.action || job.gate?.action || "WATCH";
   const state = byId("decision-state");
   state.textContent = actionLabel(action);
   state.className = `decision-state ${classFor(action)}`;
@@ -171,7 +178,7 @@ function renderFailure(message) {
   setControlsBusy(false);
   byId("job-detail").textContent = message;
   byId("decision-summary").textContent = message;
-  byId("decision-state").textContent = "FAILED";
+  byId("decision-state").textContent = "失败";
   byId("decision-state").className = "decision-state state-failed";
 }
 
@@ -186,7 +193,7 @@ async function refreshStatus() {
     }
   } catch (error) {
     byId("system-time").textContent = "本机服务异常";
-    renderFailure(error.message);
+    renderFailure(errorText(error, "无法连接本机分析服务。"));
   }
 }
 
@@ -200,24 +207,20 @@ async function refreshHistory() {
     }
     container.innerHTML = history.jobs.map((job) => `
       <article class="history-item">
-        <span class="history-state ${classFor(job.stage)}">${actionLabel(job.gate?.action || (job.stage === "FAILED" ? "FAILED" : "WATCH"))}</span>
+        <span class="history-state ${classFor(jobDisplayState(job))}">${actionLabel(jobDisplayState(job))}</span>
         <div><strong>${job.kind === "deep_review" ? "深度复盘" : "实时简报"}</strong><p class="history-detail">${detailText(job.detail)}</p></div>
         <time class="history-time mono">${formatTime(job.created_at)}</time>
       </article>`).join("");
   } catch (error) {
-    container.innerHTML = `<p class="empty-state">${error.message || "无法读取历史任务，请稍后重试。"}</p>`;
+    container.innerHTML = `<p class="empty-state">${errorText(error, "无法读取历史任务，请确认本机服务正在运行。")}</p>`;
   }
 }
 
-function restoreActiveJob() {
-  const jobId = sessionStorage.getItem('xau-analysis-job-id');
-  if (jobId) {
-    pollJob(jobId);
-  }
+async function boot() {
+  await refreshStatus();
+  await refreshHistory();
 }
 
 byId("start-brief").addEventListener("click", () => startJob("brief"));
 byId("start-deep-review").addEventListener("click", () => startJob("deep_review"));
-refreshStatus();
-refreshHistory();
-restoreActiveJob();
+boot();
