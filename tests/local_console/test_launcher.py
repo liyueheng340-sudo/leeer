@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+from unittest.mock import patch
 import unittest
 from pathlib import Path
 
@@ -22,3 +23,19 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(("127.0.0.1", 8767), launcher.launch_arguments([]))
         with self.assertRaises(SystemExit):
             launcher.launch_arguments(["--host", "0.0.0.0"])
+
+    def test_launcher_detects_an_already_running_console(self):
+        launcher = load_launcher()
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return b'{"service":"ready","host":"127.0.0.1"}'
+
+        with patch.object(launcher, "urlopen", return_value=Response()):
+            self.assertEqual("http://127.0.0.1:8767", launcher.find_existing_console_url("127.0.0.1", 8767))

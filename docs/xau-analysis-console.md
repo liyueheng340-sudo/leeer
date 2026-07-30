@@ -7,6 +7,7 @@ D:\XAU\TradingAgents\.venv\Scripts\python.exe D:\XAU\TradingAgents\scripts\run_x
 ```
 
 浏览器会打开 `http://127.0.0.1:8767`。服务只绑定本机，不向局域网开放。
+如果控制台已经在这个地址运行，重复启动会直接接管现有实例，不会再拉起第二个服务。
 
 页面有两个操作：
 

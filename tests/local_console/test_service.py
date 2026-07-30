@@ -5,6 +5,7 @@ import time
 import unittest
 from datetime import UTC, datetime
 from pathlib import Path
+from threading import Event
 
 from local_console.config import ConsoleConfig
 from local_console.jobs import JobStore
@@ -44,6 +45,38 @@ def fake_brief(_config: ConsoleConfig, _kind: str, _snapshot: dict[str, object],
 
 
 class ConsoleServiceTests(unittest.TestCase):
+    def test_start_reuses_the_active_job_instead_of_queueing_overlap(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = test_config(Path(directory))
+            entered_model = Event()
+            release_model = Event()
+
+            def slow_brief(
+                brief_config: ConsoleConfig,
+                kind: str,
+                snapshot: dict[str, object],
+                gate: object,
+            ) -> object:
+                entered_model.set()
+                release_model.wait(1)
+                return fake_brief(brief_config, kind, snapshot, gate)
+
+            service = ConsoleService(
+                config,
+                snapshot_runner=fake_snapshot,
+                event_loader=lambda _path: {"status": "verified_clear"},
+                brief_runner=slow_brief,
+            )
+            try:
+                first = service.start("brief")
+                self.assertTrue(entered_model.wait(1))
+                second = service.start("deep_review")
+            finally:
+                release_model.set()
+                service.close()
+
+        self.assertEqual(first.id, second.id)
+
     def test_service_recovers_stale_job_on_startup(self):
         with tempfile.TemporaryDirectory() as directory:
             config = test_config(Path(directory))

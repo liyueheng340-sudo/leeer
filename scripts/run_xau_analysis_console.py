@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import webbrowser
 from dataclasses import replace
 from pathlib import Path
+from urllib.error import URLError
+from urllib.request import urlopen
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -26,8 +29,25 @@ def launch_arguments(argv: list[str]) -> tuple[str, int]:
     return args.host, args.port
 
 
+def find_existing_console_url(host: str, port: int) -> str | None:
+    url = f"http://{host}:{port}/api/status"
+    try:
+        with urlopen(url, timeout=0.2) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (OSError, URLError, ValueError, json.JSONDecodeError):
+        return None
+    if isinstance(payload, dict) and payload.get("service") == "ready" and payload.get("host") == host:
+        return f"http://{host}:{port}"
+    return None
+
+
 def main(argv: list[str] | None = None) -> int:
     host, port = launch_arguments(argv or [])
+    existing_url = find_existing_console_url(host, port)
+    if existing_url:
+        print(f"XAU Analysis Console: {existing_url}")
+        webbrowser.open(existing_url)
+        return 0
     config = replace(ConsoleConfig.from_repo(), host=host, port=port)
     server = make_server(config)
     url = f"http://{host}:{server.server_address[1]}"

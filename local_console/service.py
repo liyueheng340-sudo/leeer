@@ -5,12 +5,13 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
+from threading import Lock
 from typing import Callable
 
 from .brief import request_brief, validate_report
 from .config import ConsoleConfig
 from .guard import GateResult, evaluate_gate, load_event_context
-from .jobs import JobKind, JobRecord, JobStore
+from .jobs import TERMINAL_STAGES, JobKind, JobRecord, JobStore
 from .snapshot import capture_snapshot
 
 MODEL_TIMEOUT_SECONDS = 90
@@ -34,13 +35,22 @@ class ConsoleService:
         self.snapshot_runner = snapshot_runner
         self.event_loader = event_loader
         self.brief_runner = brief_runner
+        self._start_lock = Lock()
         # ponytail: one local worker makes progress honest and avoids overlapping MT5 reads.
         self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="xau-analysis")
 
     def start(self, kind: JobKind) -> JobRecord:
-        record = self.store.create(kind)
-        self.executor.submit(self._run_job, record.id)
-        return record
+        with self._start_lock:
+            self.store.fail_stale_jobs(MODEL_TIMEOUT_SECONDS)
+            active = next(
+                (record for record in self.store.list_recent() if record.stage not in TERMINAL_STAGES),
+                None,
+            )
+            if active is not None:
+                return active
+            record = self.store.create(kind)
+            self.executor.submit(self._run_job, record.id)
+            return record
 
     def get(self, job_id: str) -> JobRecord:
         return self.store.get(job_id)

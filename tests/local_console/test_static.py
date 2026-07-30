@@ -19,11 +19,29 @@ class StaticConsoleTests(unittest.TestCase):
     def test_browser_polls_durable_job_state_instead_of_simulating_progress(self):
         script = (STATIC / "app.js").read_text(encoding="utf-8")
 
-        self.assertIn("fetch(`/api/jobs/${jobId}`)", script)
+        self.assertIn('await jsonRequest(`/api/jobs/${jobId}`)', script)
         self.assertIn("window.setInterval", script)
-        self.assertIn("sessionStorage.setItem('xau-analysis-job-id'", script)
         self.assertIn("setControlsBusy(!TERMINAL.has(job.stage))", script)
         self.assertIn("pollJob(status.latest_job.id)", script)
+        self.assertIn('catch (error) {', script)
+        self.assertIn('无法读取历史任务，请稍后重试。', script)
+
+    def test_dashboard_boots_from_one_durable_server_state(self):
+        script = (STATIC / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn("async function boot()", script)
+        self.assertIn("await refreshStatus();", script)
+        self.assertIn("await refreshHistory();", script)
+        self.assertNotIn("sessionStorage", script)
+        self.assertNotIn("restoreActiveJob", script)
+
+    def test_failed_jobs_keep_completed_progress_and_failed_history_state(self):
+        script = (STATIC / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn("const terminalFailure =", script)
+        self.assertIn("terminalFailure ? STAGES.length - 1", script)
+        self.assertIn("jobDisplayState(job)", script)
+        self.assertIn('byId("decision-state").textContent = "失败"', script)
 
     def test_dashboard_hides_legacy_english_reports(self):
         script = (STATIC / "app.js").read_text(encoding="utf-8")

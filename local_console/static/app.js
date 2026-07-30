@@ -71,7 +71,6 @@ async function startJob(kind) {
     pollJob(job.id);
   } catch (error) {
     renderFailure(error.message);
-    setControlsBusy(false);
   }
 }
 
@@ -79,7 +78,7 @@ function pollJob(jobId) {
   window.clearInterval(pollingTimer);
   pollingTimer = window.setInterval(async () => {
     try {
-      const job = await fetch(`/api/jobs/${jobId}`).then((response) => response.json());
+      const job = await jsonRequest(`/api/jobs/${jobId}`);
       renderJob(job);
       if (TERMINAL.has(job.stage)) {
         window.clearInterval(pollingTimer);
@@ -168,6 +167,8 @@ function renderDecision(job) {
 }
 
 function renderFailure(message) {
+  window.clearInterval(pollingTimer);
+  setControlsBusy(false);
   byId("job-detail").textContent = message;
   byId("decision-summary").textContent = message;
   byId("decision-state").textContent = "FAILED";
@@ -190,18 +191,22 @@ async function refreshStatus() {
 }
 
 async function refreshHistory() {
-  const history = await jsonRequest("/api/history");
   const container = byId("history");
-  if (!history.jobs.length) {
-    container.innerHTML = '<p class="empty-state">没有历史任务。</p>';
-    return;
+  try {
+    const history = await jsonRequest("/api/history");
+    if (!history.jobs.length) {
+      container.innerHTML = '<p class="empty-state">没有历史任务。</p>';
+      return;
+    }
+    container.innerHTML = history.jobs.map((job) => `
+      <article class="history-item">
+        <span class="history-state ${classFor(job.stage)}">${actionLabel(job.gate?.action || (job.stage === "FAILED" ? "FAILED" : "WATCH"))}</span>
+        <div><strong>${job.kind === "deep_review" ? "深度复盘" : "实时简报"}</strong><p class="history-detail">${detailText(job.detail)}</p></div>
+        <time class="history-time mono">${formatTime(job.created_at)}</time>
+      </article>`).join("");
+  } catch (error) {
+    container.innerHTML = `<p class="empty-state">${error.message || "无法读取历史任务，请稍后重试。"}</p>`;
   }
-  container.innerHTML = history.jobs.map((job) => `
-    <article class="history-item">
-      <span class="history-state ${classFor(job.stage)}">${actionLabel(job.gate?.action || (job.stage === "FAILED" ? "FAILED" : "WATCH"))}</span>
-      <div><strong>${job.kind === "deep_review" ? "深度复盘" : "实时简报"}</strong><p class="history-detail">${detailText(job.detail)}</p></div>
-      <time class="history-time mono">${formatTime(job.created_at)}</time>
-    </article>`).join("");
 }
 
 function restoreActiveJob() {

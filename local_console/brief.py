@@ -16,6 +16,23 @@ REQUIRED_KEYS = {"action", "source_ids", "summary", "invalidation", "next_observ
 VISIBLE_TEXT_KEYS = ("summary", "invalidation", "next_observation")
 MODEL_TIMEOUT_SECONDS = 90
 ALLOWED_ACTIONS = {"ANALYSE", "WATCH", "WAIT"}
+ALLOWED_LATIN_TERMS = {
+    "ASK",
+    "ATR",
+    "BID",
+    "BITGET",
+    "H1",
+    "H4",
+    "M1",
+    "M5",
+    "M15",
+    "MT5",
+    "QWEN",
+    "SL",
+    "TP",
+    "WATCH",
+    "XAUUSD",
+}
 DIRECT_ENTRY_PATTERN = re.compile(
     r"\b(buy|sell|long|short)\s+(now|immediately)\b|立即买入|立即卖出|立即开多|立即开空|马上买入|马上卖出",
     re.IGNORECASE,
@@ -29,8 +46,6 @@ def request_brief(
     gate: GateResult,
 ) -> object:
     model = config.deep_model if kind == "deep_review" else config.quick_model
-    if not config.backend_url:
-        raise RuntimeError("Qwen backend URL is not configured")
     llm = create_llm_client(
         "qwen", model, config.backend_url, timeout=MODEL_TIMEOUT_SECONDS, max_retries=0
     ).get_llm()
@@ -77,8 +92,13 @@ def validate_report(
     missing = REQUIRED_KEYS - set(payload)
     if missing:
         return False, f"报告缺少字段：{', '.join(sorted(missing))}", None
-    if payload.get("action") not in ALLOWED_ACTIONS:
+    action = payload.get("action")
+    if action not in ALLOWED_ACTIONS:
         return False, "报告动作无效", None
+    if gate.action == "WATCH" and action != "WATCH":
+        return False, "观察模式报告动作必须是 WATCH", None
+    if gate.action == "WAIT" and action != "WAIT":
+        return False, "等待模式报告动作必须是 WAIT", None
     source_ids = payload.get("source_ids")
     if not isinstance(source_ids, list) or not source_ids or not all(
         isinstance(source, str) for source in source_ids
@@ -93,7 +113,10 @@ def validate_report(
     for key in VISIBLE_TEXT_KEYS:
         if not isinstance(payload.get(key), str) or not payload[key].strip():
             return False, f"报告字段无效：{key}", None
-        if not re.search(r"[\u4e00-\u9fff]", payload[key]):
+        latin_terms = re.findall(r"\b[A-Za-z][A-Za-z0-9]*\b", payload[key])
+        if not re.search(r"[\u4e00-\u9fff]", payload[key]) or any(
+            term.upper() not in ALLOWED_LATIN_TERMS for term in latin_terms
+        ):
             return False, f"报告正文必须使用中文：{key}", None
     visible_text = " ".join(
         str(payload[key]) for key in ("summary", "invalidation", "next_observation")
