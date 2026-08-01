@@ -8,12 +8,18 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
+from .resonance import compute_resonance
+
 
 GateAction = Literal["ANALYSE", "WATCH", "WAIT", "BLOCKED"]
 
 # 点差峰值达到该值（价格单位）即视为异常扩大，ANALYSE 降级为 WATCH。
-# 参考：XAUUSD 常态点差约 0.1-0.3，高影响事件前后可达 1.0-3.0。
-SPREAD_DOWNGRADE_THRESHOLD = 0.8
+# 剥头皮目标 3-5 个点，0.5 已吃掉 10%+ 利润：按 0.5 封顶（常态 0.1-0.3）。
+SPREAD_DOWNGRADE_THRESHOLD = 0.5
+# 共振明确阈值：|score| ≥ 0.5 才允许 ANALYSE 强方向；否则按保守观察输出。
+RESONANCE_CLEAR_THRESHOLD = 0.5
+# 黄金剥头皮活跃时段（校正 UTC）：伦敦 / 伦敦纽约重叠 / 纽约午盘。
+ACTIVE_SESSION_LABELS = {"london", "london_ny_overlap", "ny_late"}
 
 
 @dataclass(frozen=True)
@@ -38,6 +44,32 @@ def tick_downgrade_reason(tick_health: dict[str, object] | None) -> str | None:
     spread_max = tick_health.get("spread_max")
     if isinstance(spread_max, (int, float)) and spread_max >= SPREAD_DOWNGRADE_THRESHOLD:
         return f"点差异常扩大（峰值 {spread_max:.2f}），降级为观察"
+    return None
+
+
+def resonance_downgrade_reason(snapshot: dict[str, object]) -> str | None:
+    """共振不明确时降级：只有结构数据存在时才判断，缺失不降级。
+
+    实测复盘：ANALYSE 组（事件全核验）平均 R -0.23，WATCH 组 +0.54——
+    模型在"全条件完美"时过度自信。共振不明确 = 方向证据不足，按保守输出。
+    """
+    structure = snapshot.get("timeframe_structure")
+    if not isinstance(structure, dict) or not structure:
+        return None
+    resonance = compute_resonance(snapshot)
+    score = resonance.get("score")
+    if not isinstance(score, (int, float)) or abs(score) >= RESONANCE_CLEAR_THRESHOLD:
+        return None
+    return f"多周期共振不明确（score {score:+.2f}），降级为观察"
+
+
+def session_downgrade_reason(snapshot: dict[str, object]) -> str | None:
+    """非活跃时段流动性不足，剥头皮胜率天然偏低；缺失 session_label 不降级。"""
+    label = snapshot.get("session_label")
+    if not isinstance(label, str) or not label:
+        return None
+    if label not in ACTIVE_SESSION_LABELS:
+        return f"当前时段 {label} 流动性不足，降级为观察"
     return None
 
 
@@ -95,6 +127,12 @@ def evaluate_gate(
     downgrade = tick_downgrade_reason(tick_health)
     if downgrade is not None:
         return GateResult("WATCH", True, True, downgrade)
+    resonance_downgrade = resonance_downgrade_reason(snapshot)
+    if resonance_downgrade is not None:
+        return GateResult("WATCH", True, True, resonance_downgrade)
+    session_downgrade = session_downgrade_reason(snapshot)
+    if session_downgrade is not None:
+        return GateResult("WATCH", True, True, session_downgrade)
     return GateResult("ANALYSE", True, True, "MT5 快照新鲜且事件状态已核验")
 
 

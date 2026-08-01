@@ -554,8 +554,8 @@ class NewsSourceValidationTests(unittest.TestCase):
         self.assertNotIn("预期差", prompt)
 
     def test_prompt_version_upgraded_for_news(self):
-        # 版本锁：1.2.0 加入事件时效交叉验证规则（past_events + 新闻优先）
-        self.assertEqual("1.2.0", PROMPT_VERSION)
+        # 版本锁：1.3.0 收紧强方向输出（共振相悖拒绝 / 关键价位贴近 / guard 降级）
+        self.assertEqual("1.3.0", PROMPT_VERSION)
 
     def test_prompt_contains_event_cross_validation_rule(self):
         """verified_clear 状态的 prompt 应包含事件交叉验证规则。"""
@@ -570,3 +570,108 @@ class NewsSourceValidationTests(unittest.TestCase):
         self.assertIn("past_events", prompt)
         self.assertIn("已公布", prompt)
         self.assertIn("以新闻为准", prompt)
+
+class EdgeDisciplineValidationTests(unittest.TestCase):
+    """1.3.0：顺势硬约束 + 关键价位贴近（交易员视角的纪律过滤）。"""
+
+    def snapshot_with_resonance(self, score: float) -> dict[str, object]:
+        return {
+            **analyse_snapshot(),
+            "timeframe_resonance": {
+                "available": True,
+                "score": score,
+                "label": "共振偏多" if score > 0 else "共振偏空",
+            },
+        }
+
+    def test_long_rejected_when_resonance_bearish(self):
+        payload = analyse_payload()  # LONG
+        accepted, reason, _ = validate_report(
+            payload, ANALYSE_GATE, self.snapshot_with_resonance(-0.8)
+        )
+
+        self.assertFalse(accepted)
+        self.assertEqual("方向与多周期共振相悖：共振偏空时禁止做多", reason)
+
+    def test_short_rejected_when_resonance_bullish(self):
+        payload = analyse_payload()
+        payload["direction"] = "SHORT"
+        payload["take_profit"] = "3985"
+        payload["stop_loss"] = "4015"
+        accepted, reason, _ = validate_report(
+            payload, ANALYSE_GATE, self.snapshot_with_resonance(0.8)
+        )
+
+        self.assertFalse(accepted)
+        self.assertEqual("方向与多周期共振相悖：共振偏多时禁止做空", reason)
+
+    def test_long_accepted_when_resonance_bullish(self):
+        payload = analyse_payload()  # LONG
+        accepted, reason, _ = validate_report(
+            payload, ANALYSE_GATE, self.snapshot_with_resonance(0.8)
+        )
+
+        self.assertTrue(accepted)
+        self.assertEqual("报告已验收", reason)
+
+    def test_short_accepted_when_resonance_bearish(self):
+        payload = analyse_payload()
+        payload["direction"] = "SHORT"
+        payload["take_profit"] = "3985"
+        payload["stop_loss"] = "4015"
+        accepted, reason, _ = validate_report(
+            payload, ANALYSE_GATE, self.snapshot_with_resonance(-0.8)
+        )
+
+        self.assertTrue(accepted)
+        self.assertEqual("报告已验收", reason)
+
+    def test_weak_resonance_skips_direction_gate(self):
+        payload = analyse_payload()  # LONG
+        accepted, _, _ = validate_report(
+            payload, ANALYSE_GATE, self.snapshot_with_resonance(0.3)
+        )
+
+        self.assertTrue(accepted)  # |score|<0.5 不构成强制方向
+
+    def test_entry_must_touch_key_level(self):
+        snapshot = analyse_snapshot()
+        snapshot["latest_closed_bars"] = {"h1": {"high": 3990.0, "low": 3970.0}}
+        snapshot["timeframe_structure"] = {"h1": {"atr_14": 20.0}}
+        payload = analyse_payload()
+        payload["entry_zone"] = "4022-4028"  # 距 3990 关键位 35 > 1×ATR(20)，距 4000 关口 25 > 20
+        payload["take_profit"] = "4040"
+        payload["stop_loss"] = "4015"
+
+        accepted, reason, _ = validate_report(payload, ANALYSE_GATE, snapshot)
+
+        self.assertFalse(accepted)
+        self.assertIn("未贴近任何关键价位", reason)
+
+    def test_entry_touching_key_level_is_accepted(self):
+        snapshot = analyse_snapshot()
+        snapshot["latest_closed_bars"] = {"h1": {"high": 4000.0, "low": 3980.0}}
+        snapshot["timeframe_structure"] = {"h1": {"atr_14": 20.0}}
+        payload = analyse_payload()
+        payload["entry_zone"] = "3995-4005"  # 中点 4000 = 前日高
+
+        accepted, reason, _ = validate_report(payload, ANALYSE_GATE, snapshot)
+
+        self.assertTrue(accepted)
+        self.assertEqual("报告已验收", reason)
+
+    def test_prompt_injects_key_levels_when_available(self):
+        snapshot = analyse_snapshot()
+        snapshot["latest_closed_bars"] = {"h1": {"high": 3990.0, "low": 3970.0}}
+
+        prompt = build_prompt(snapshot, ANALYSE_GATE, "brief")
+
+        self.assertIn("关键价位层", prompt)
+        self.assertIn("3970.0", prompt)
+
+    def test_prompt_injects_round_levels_even_without_bars(self):
+        # bid=4000 → 整数关口 3950/4000/4050 始终由 bid 确定性推出
+        prompt = build_prompt(analyse_snapshot(), ANALYSE_GATE, "brief")
+
+        self.assertIn("关键价位层", prompt)
+        self.assertIn("4000", prompt)

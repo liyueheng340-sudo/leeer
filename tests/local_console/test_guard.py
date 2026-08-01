@@ -135,3 +135,70 @@ class GateTests(unittest.TestCase):
 
         self.assertEqual("WAIT", result.action)
         self.assertFalse(result.allow_model)
+
+class EdgeDowngradeTests(unittest.TestCase):
+    """1.3.0：共振不明确 / 非活跃时段降级为 WATCH（保留技术面，禁强方向）。"""
+
+    def snapshot_with_structure(self, structure: dict[str, object]) -> dict[str, object]:
+        snapshot = fresh_snapshot()
+        snapshot["timeframe_structure"] = structure
+        return snapshot
+
+    def test_unclear_resonance_downgrades_to_watch(self):
+        # m5 多一票 vs h4 空一票 → score=0.6? 权重 (4,-1)/10=0.3 → 不明确
+        # m15 空(-2) + h4 多(+4) → score=(4-2)/(4+2)=+0.33 → 不明确
+        snapshot = self.snapshot_with_structure({
+            "m15": {"body_direction": "sell", "change_4": -1.0},
+            "h4": {"body_direction": "buy", "change_4": 1.0},
+        })
+
+        result = evaluate_gate(
+            snapshot, {"status": "verified_clear"}, NOW, healthy_tick()
+        )
+
+        self.assertEqual("WATCH", result.action)
+        self.assertTrue(result.allow_model)
+        self.assertTrue(result.directional_plan_allowed)
+        self.assertIn("共振不明确", result.reason)
+
+    def test_clear_resonance_keeps_analyse(self):
+        snapshot = self.snapshot_with_structure({
+            "m5": {"body_direction": "buy", "change_4": 1.0},
+            "m15": {"body_direction": "buy", "change_4": 1.0},
+            "h1": {"body_direction": "buy", "change_4": 1.0},
+            "h4": {"body_direction": "buy", "change_4": 1.0},
+        })
+
+        result = evaluate_gate(
+            snapshot, {"status": "verified_clear"}, NOW, healthy_tick()
+        )
+
+        self.assertEqual("ANALYSE", result.action)
+
+    def test_inactive_session_downgrades_to_watch(self):
+        snapshot = fresh_snapshot()
+        snapshot["session_label"] = "asia"
+
+        result = evaluate_gate(
+            snapshot, {"status": "verified_clear"}, NOW, healthy_tick()
+        )
+
+        self.assertEqual("WATCH", result.action)
+        self.assertIn("流动性不足", result.reason)
+
+    def test_active_session_keeps_analyse(self):
+        snapshot = fresh_snapshot()
+        snapshot["session_label"] = "london_ny_overlap"
+
+        result = evaluate_gate(
+            snapshot, {"status": "verified_clear"}, NOW, healthy_tick()
+        )
+
+        self.assertEqual("ANALYSE", result.action)
+
+    def test_missing_session_label_does_not_downgrade(self):
+        result = evaluate_gate(
+            fresh_snapshot(), {"status": "verified_clear"}, NOW, healthy_tick()
+        )
+
+        self.assertEqual("ANALYSE", result.action)

@@ -37,7 +37,10 @@ DEEP_MODEL_MAX_RETRIES = 0
 # 提示词版本：每次修改 build_prompt 的约束/规则后手动递增，
 # 随任务落盘（gate_payload.prompt_version），供复盘关联“改提示词前后”的效果差异。
 # 1.1.1：针对实测 REJECTED 主因（risk_note/next_observation 混入英文单词）补充白名单缩写规则。
-PROMPT_VERSION = "1.2.0"
+# 1.3.0：按实测复盘（ANALYSE 组 avg R -0.23 vs WATCH 组 +0.54）收紧强方向输出——
+#       共振不明确/非活跃时段/点差超标时 guard 降级；报告方向与共振相悖直接 REJECT；
+#       关键价位层（前日高低/当日高低/整数关口/最近摆动点）喂入 prompt 并要求入场贴近。
+PROMPT_VERSION = "1.3.0"
 ALLOWED_ACTIONS = {"ANALYSE", "WATCH", "WAIT"}
 ALLOWED_DIRECTIONS = {"LONG", "SHORT", "NEUTRAL"}
 ALLOWED_LATIN_TERMS = {
@@ -226,7 +229,8 @@ def build_prompt(snapshot: dict[str, object], gate: GateResult, kind: JobKind) -
         output_rules.append(
             "timeframe_resonance 是由已收盘 K 线计算的确定性方向共振事实："
             "score∈[-1,1]（正为多、负为空），label 为共振偏多/共振偏空/方向冲突/方向不明。"
-            "direction 应与 score 符号保持一致，若背离必须在 risk_note 中说明理由；"
+            "direction 必须与 score 符号一致：score>0 只允许 LONG 或 NEUTRAL，score<0 只允许 SHORT 或 NEUTRAL；"
+            "相悖方向（空头结构做多或多头结构做空）将被直接拒绝。"
             "label 为方向冲突或方向不明（|score|<0.5）时，不得给出强方向建议，宜倾向 NEUTRAL。"
         )
     news = snapshot.get("news_context")
@@ -248,6 +252,14 @@ def build_prompt(snapshot: dict[str, object], gate: GateResult, kind: JobKind) -
             "stop_loss": "建议止损价位，如 '4055'（字符串）",
             "risk_note": "风险提示，简体中文，一句话",
         }
+        key_levels = _key_levels(snapshot)
+        if key_levels:
+            output_rules.append(
+                "关键价位层（由已收盘 K 线与整数关口确定性计算）："
+                + "、".join(str(level) for level in key_levels)
+                + "。入场区间中点必须贴近其中至少一个关键价位（1 倍参考 ATR 内），否则报告将被拒绝；"
+                "支撑位做多、阻力位做空，止损放在关键价位外侧。"
+            )
         trade_rule = (
             "You MUST provide direction/entry_zone/take_profit/stop_loss/risk_note. "
             "Base them strictly on the provided snapshot facts (ATR, structure, support/resistance from closed bars). "
@@ -295,6 +307,94 @@ def _reference_atr(snapshot: dict[str, object]) -> float | None:
     if isinstance(fallback, (int, float)):
         return float(fallback)
     return None
+
+
+# 关键价位判定：入场区间中点需落在某关键价位 ± 1.0 ATR 内（剥头皮 M1，取 H1 ATR 作尺度）。
+KEY_LEVEL_ATR_TOLERANCE = 1.0
+
+
+def _key_levels(snapshot: dict[str, object]) -> list[float]:
+    """从快照确定性提取关键价位：前日高/低、当日高/低、最近整数关口、最近摆动点。
+
+    全部来自已提供事实（latest_closed_bars / timeframe_structure 的最近已收盘 K 线），
+    无模型推断；任一数据缺失即跳过该项。返回去重升序价位列表。
+    """
+    levels: list[float] = []
+    bars = snapshot.get("latest_closed_bars")
+    if isinstance(bars, dict):
+        for tf in ("h4", "h1", "m15", "m5"):
+            bar = bars.get(tf)
+            if isinstance(bar, dict):
+                high, low = bar.get("high"), bar.get("low")
+                if isinstance(high, (int, float)):
+                    levels.append(float(high))
+                if isinstance(low, (int, float)):
+                    levels.append(float(low))
+    structure = snapshot.get("timeframe_structure")
+    if isinstance(structure, dict):
+        for tf in ("h1", "m15", "m5"):
+            frame = structure.get(tf)
+            if isinstance(frame, dict):
+                high, low = frame.get("high"), frame.get("low")
+                if isinstance(high, (int, float)):
+                    levels.append(float(high))
+                if isinstance(low, (int, float)):
+                    levels.append(float(low))
+    bid = snapshot.get("bid")
+    if isinstance(bid, (int, float)) and bid > 0:
+        for increment in (50, 100):
+            base = round(float(bid) / increment) * increment
+            levels.extend([base - increment, base, base + increment])
+    unique = sorted(set(round(level, 2) for level in levels if level > 0))
+    return unique[:16]  # 防 prompt 膨胀，最多 16 个
+
+
+def _validate_resonance_direction(
+    payload: dict[str, object], snapshot: dict[str, object]
+) -> str | None:
+    """强方向建议必须与多周期共振同向；相悖直接拒绝（顺势硬约束）。
+
+    实测复盘：SHORT（顺势）30 样本 avg R +0.40，LONG（逆势）7 样本 -0.28。
+    共振由已收盘 K 线确定性计算，非模型推断，可作为验收硬规则。
+    共振不可用或 |score|<0.5 时不做此校验（不明确 = 无强制方向）。
+    """
+    direction = payload.get("direction")
+    if direction not in ("LONG", "SHORT"):
+        return None
+    resonance = snapshot.get("timeframe_resonance")
+    if not isinstance(resonance, dict) or resonance.get("available") is not True:
+        return None
+    score = resonance.get("score")
+    if not isinstance(score, (int, float)) or abs(score) < 0.5:
+        return None
+    if direction == "LONG" and score < 0:
+        return "方向与多周期共振相悖：共振偏空时禁止做多"
+    if direction == "SHORT" and score > 0:
+        return "方向与多周期共振相悖：共振偏多时禁止做空"
+    return None
+
+
+def _validate_entry_at_key_level(
+    payload: dict[str, object], snapshot: dict[str, object]
+) -> str | None:
+    """强方向建议的入场必须贴近关键价位（支撑买/阻力卖是剥头皮点位纪律）。
+
+    无关键价位或方向 NEUTRAL 时跳过；缺失 ATR 基准时放宽为最近整数关口 ±2.0。
+    """
+    if payload.get("direction") == "NEUTRAL":
+        return None
+    entry = _parse_prices(payload.get("entry_zone"))
+    if not entry:
+        return None  # 几何校验已报告解析失败
+    levels = _key_levels(snapshot)
+    if not levels:
+        return None
+    atr = _reference_atr(snapshot)
+    tolerance = KEY_LEVEL_ATR_TOLERANCE * atr if isinstance(atr, (int, float)) and atr > 0 else 2.0
+    entry_mid = (min(entry) + max(entry)) / 2
+    if any(abs(entry_mid - level) <= tolerance for level in levels):
+        return None
+    return "入场区间未贴近任何关键价位（前日高低/当日高低/整数关口/最近摆动点）"
 
 
 def _resolve_evidence_path(snapshot: dict[str, object], path: str) -> bool:
@@ -439,4 +539,10 @@ def validate_report(
             snapshot_error = _validate_against_snapshot(payload, snapshot)
             if snapshot_error:
                 return False, snapshot_error, None
+            resonance_error = _validate_resonance_direction(payload, snapshot)
+            if resonance_error:
+                return False, resonance_error, None
+            level_error = _validate_entry_at_key_level(payload, snapshot)
+            if level_error:
+                return False, level_error, None
     return True, "报告已验收", dict(payload)
