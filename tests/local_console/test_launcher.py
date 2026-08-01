@@ -39,3 +39,18 @@ class LauncherTests(unittest.TestCase):
 
         with patch.object(launcher, "urlopen", return_value=Response()):
             self.assertEqual("http://127.0.0.1:8767", launcher.find_existing_console_url("127.0.0.1", 8767))
+
+    def test_launcher_refuses_environment_missing_llm_dependencies(self):
+        launcher = load_launcher()
+
+        with patch.object(launcher.importlib.util, "find_spec", return_value=None):
+            with self.assertRaises(SystemExit) as ctx:
+                launcher.check_llm_dependencies()
+
+        self.assertEqual(1, ctx.exception.code)
+
+    def test_launcher_accepts_environment_with_llm_dependencies(self):
+        launcher = load_launcher()
+
+        with patch.object(launcher.importlib.util, "find_spec", return_value=object()):
+            launcher.check_llm_dependencies()  # 不抛即通过

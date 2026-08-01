@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
 import sys
@@ -28,6 +29,31 @@ def launch_arguments(argv: list[str]) -> tuple[str, int]:
     if not 1 <= args.port <= 65535:
         raise SystemExit("port must be between 1 and 65535")
     return args.host, args.port
+
+
+def check_llm_dependencies() -> None:
+    """用错 Python 环境时在启动前给出修复指令，而不是让服务"能开但一分析就失败"。
+
+    2026-08-01 事故：用系统 python 启动控制台，缺 langchain_core，
+    每个任务在 MODEL 阶段 1 秒内全部失败且页面提示不明确。
+    """
+    missing = [
+        package
+        for package in ("langchain_core", "langchain_openai")
+        if importlib.util.find_spec(package) is None
+    ]
+    if not missing:
+        return
+    venv_python = Path(__file__).resolve().parents[1] / ".venv" / "Scripts" / "python.exe"
+    print(
+        "XAU Analysis Console 启动失败：当前 Python 环境缺少模型依赖（"
+        + "、".join(missing)
+        + "）。\n请改用项目虚拟环境启动：\n  "
+        + str(venv_python)
+        + " scripts/run_xau_analysis_console.py",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
 
 
 def find_existing_console_url(host: str, port: int) -> str | None:
@@ -66,6 +92,7 @@ def acquire_instance_lock(config: ConsoleConfig) -> object | None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    check_llm_dependencies()
     host, port = launch_arguments(argv or [])
     config = replace(ConsoleConfig.from_repo(), host=host, port=port)
     lock = acquire_instance_lock(config)
