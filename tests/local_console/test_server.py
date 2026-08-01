@@ -30,6 +30,12 @@ def fake_brief(_config: ConsoleConfig, _kind: str, _snapshot: dict[str, object],
         "summary": "这是测试报告。",
         "invalidation": "后续快照会替代它。",
         "next_observation": "M1 收盘后刷新。",
+        "evidence_fields": ["bid", "symbol"],
+        "direction": "LONG",
+        "entry_zone": "3995-4005",
+        "take_profit": "4015",
+        "stop_loss": "3985",
+        "risk_note": "测试环境风险提示。",
     }
 
 
@@ -88,6 +94,88 @@ class ServerTests(unittest.TestCase):
         self.assertIn("events", current)
         self.assertIsInstance(current["elapsed_seconds"], float)
 
+    def test_auto_endpoint_toggles_and_status_reflects(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = ConsoleConfig(
+                repo_root=root,
+                state_dir=root / "runtime",
+                mt5_python=root / "python.exe",
+                mt5_snapshot_script=root / "snapshot.py",
+                backend_url="https://example.invalid/v1",
+                quick_model="quick",
+                deep_model="deep",
+                port=0,
+            )
+            service = ConsoleService(
+                config,
+                snapshot_runner=fake_snapshot,
+                event_loader=lambda _path: {"status": "verified_clear"},
+                brief_runner=fake_brief,
+            )
+            server = make_server(config, service)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                port = server.server_address[1]
+                initial = request_json(port, "GET", "/api/auto")
+                enabled = request_json(port, "POST", "/api/auto", {"enabled": True})
+                status = request_json(port, "GET", "/api/status")
+                bad_status, bad_body = request_raw(port, "POST", "/api/auto", {})
+            finally:
+                server.shutdown()
+                thread.join(timeout=2)
+                server.server_close()
+                service.close()
+
+        self.assertFalse(initial["enabled"])
+        self.assertIn("interval_seconds", initial)
+        self.assertTrue(enabled["enabled"])
+        self.assertTrue(status["auto"]["enabled"])
+        self.assertEqual(400, bad_status)
+        self.assertIn("enabled", bad_body["error"])
+
+    def test_unexpected_service_error_returns_500_json_instead_of_dropping(self):
+        """处理线程遇未捕获异常时必须回 500 JSON，不得静默断开连接。"""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = ConsoleConfig(
+                repo_root=root,
+                state_dir=root / "runtime",
+                mt5_python=root / "python.exe",
+                mt5_snapshot_script=root / "snapshot.py",
+                backend_url="https://example.invalid/v1",
+                quick_model="quick",
+                deep_model="deep",
+                port=0,
+            )
+            service = ConsoleService(
+                config,
+                snapshot_runner=fake_snapshot,
+                event_loader=lambda _path: {"status": "verified_clear"},
+                brief_runner=fake_brief,
+            )
+
+            def exploding_start(_kind: str):
+                raise RuntimeError("private implementation detail")
+
+            service.start = exploding_start  # type: ignore[method-assign]
+            server = make_server(config, service)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                port = server.server_address[1]
+                status, body = request_raw(port, "POST", "/api/jobs", {"kind": "brief"})
+            finally:
+                server.shutdown()
+                thread.join(timeout=2)
+                server.server_close()
+                service.close()
+
+        self.assertEqual(500, status)
+        self.assertIn("error", body)
+        self.assertNotIn("private", body["error"])
+
 
 def request_json(port: int, method: str, path: str, body: dict[str, object] | None = None) -> dict[str, object]:
     connection = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
@@ -100,3 +188,14 @@ def request_json(port: int, method: str, path: str, body: dict[str, object] | No
     if response.status not in {200, 202}:
         raise AssertionError(result)
     return result
+
+
+def request_raw(port: int, method: str, path: str, body: dict[str, object] | None = None) -> tuple[int, dict[str, object]]:
+    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+    payload = None if body is None else json.dumps(body)
+    headers = {} if payload is None else {"Content-Type": "application/json"}
+    connection.request(method, path, body=payload, headers=headers)
+    response = connection.getresponse()
+    result = json.loads(response.read().decode("utf-8"))
+    connection.close()
+    return response.status, result

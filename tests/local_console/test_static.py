@@ -16,6 +16,15 @@ class StaticConsoleTests(unittest.TestCase):
         self.assertIn('id="job-progress"', page)
         self.assertIn('aria-live="polite"', page)
 
+    def test_dashboard_exposes_sensor_and_evidence_regions(self):
+        page = (STATIC / "index.html").read_text(encoding="utf-8")
+
+        self.assertIn('id="tick-status"', page)
+        self.assertIn('id="macro-status"', page)
+        self.assertIn('id="macro-card"', page)
+        self.assertIn('id="layer-evidence"', page)
+        self.assertIn('id="decision-state"', page)
+
     def test_browser_polls_durable_job_state_instead_of_simulating_progress(self):
         script = (STATIC / "app.js").read_text(encoding="utf-8")
 
@@ -57,3 +66,19 @@ class StaticConsoleTests(unittest.TestCase):
         self.assertIn("function escapeHtml(value)", script)
         self.assertIn("${escapeHtml(detailText(job.detail))}", script)
         self.assertIn('escapeHtml(errorText(error, "无法读取历史任务', script)
+
+    def test_evidence_chips_and_macro_rows_are_escaped(self):
+        script = (STATIC / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn("renderSensors(gate)", script)
+        self.assertIn("${escapeHtml(field)}", script)
+        self.assertIn("escapeHtml(item.label || sid)", script)
+
+    def test_poll_failure_backs_off_instead_of_giving_up(self):
+        # 轮询遇瞬时错误必须退避重试而非一次性判死（2026-08-01 服务故障时前端放弃轮询）。
+        script = (STATIC / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn("pollFailures", script)
+        self.assertIn("状态读取暂时失败", script)
+        self.assertIn("pollJob(jobId);", script)
+        self.assertIn("window.clearInterval(pollingTimer);", script)
