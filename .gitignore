@@ -222,3 +222,11 @@ __marimo__/
 # Enterprise env file (secrets) and generated run reports
 .env.enterprise
 reports/
+
+# Local tool state and backups (XAU console worktree)
+.env.bak
+.omo/
+.qoder/
+.workbuddy/
+.tmp/
+*.xlsx

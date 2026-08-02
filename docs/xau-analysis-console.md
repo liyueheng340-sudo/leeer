@@ -16,7 +16,17 @@ D:\XAU\TradingAgents\.venv\Scripts\python.exe D:\XAU\TradingAgents\scripts\run_x
 
 进度来自服务端持久任务记录。刷新浏览器后会恢复当前任务，不是前端倒计时。
 
-`WATCH` 表示事件上下文未核验，只给观察条件。`WAIT` 表示已知事件窗口，模型不会运行。`BLOCKED` 表示快照不可用、过期或身份不匹配。`REJECTED` 表示模型报告引用了未提供的数据或违反约束。
+## 门态语义（2026-08-01 军师模式，见 docs/xau-system-constitution.md）
+
+系统是军师不是保安：**分析层永不锁死**，任何时刻都给出分析与建议。
+
+- `ANALYSE`：常态门态。事件窗口、市场状态、流动性、点差、EA 风控等一切风险因素
+  都转为 `warnings` 标注，随报告呈现给交易者（前端琥珀色标注条），绝不阻断分析。
+- `BLOCKED`：唯一保底——第一手数据不可用（快照过期/报价无效/身份不匹配）。此时模型不运行。
+- `REJECTED`：模型报告违反真实性或格式约束（引用未提供的数据、字段缺失、几何/幅度越界、非中文）。
+  方向与点位纪律（共振相悖、震荡市强方向、入场不贴关键价位）已从 REJECTED 降级为
+  `report.validation_warnings` 风险标注——报告照常验收，风险如实呈现。
+- 旧 `WATCH`/`WAIT` 门态已废除：事件未核验/事件窗口只产生标注，不再禁模型或禁方向。
 
 控制台只调用已有的只读 MT5 行情快照脚本。它没有下单、仓位、平仓、止损止盈、账户设置或 MT5 配置入口。
 
@@ -27,10 +37,10 @@ D:\XAU\TradingAgents\.venv\Scripts\python.exe D:\XAU\TradingAgents\scripts\run_x
 | 层 | 来源 | 频率 | 用途 |
 |---|---|---|---|
 | MT5 快照 | 合并采集脚本（见下），内部复用外部只读快照逻辑 | 分钟级 | 第一事实来源：报价、ATR、多周期结构 |
-| tick 传感器 | 与快照同一 MT5 会话产出（零额外调用） | 近 60 秒 tick | 闸门降级触发：点差峰值 ≥ 0.8 或报价停滞 → ANALYSE 降为 WATCH |
-| 事件日历 | `data_cache/xau_analysis_console/calendar.json` | 人工周更/可选 URL | 高影响事件前 30 分钟至后 15 分钟 → WAIT（模型不运行） |
+| tick 传感器 | 与快照同一 MT5 会话产出（零额外调用） | 近 60 秒 tick | 风险标注：点差峰值 ≥ 0.5 或报价停滞 → 写入 warnings（不阻断） |
+| 事件日历 | `data_cache/xau_analysis_console/calendar.json` | 人工周更/可选 URL | 高影响事件前 60 分钟至后 30 分钟 → wait 状态 → 转为 warnings 标注（不锁模型） |
 | FRED 宏观背景 | DFII10 / DTWEXBGS / DGS10 / T10YIE | 日频，缓存 6 小时 | 中期背景层，禁止用于盘中价位描述 |
-| EA 风控态（2026-07-31 接入） | Cerberus `ng_status.json`（MT5 终端 `MQL5/Files/`，只读） | EA 约 30 秒写一次；陈旧 >120 秒即忽略 | 闸门前向对齐：`PAUSED_NEWS`→WAIT；`PAUSED_VOLATILITY`/`regime_blocked`/`hour.blocked`→WATCH；只消费风险机制字段，不含持仓/盈亏；EA 未运行时行为与接入前完全一致。详见 `docs/cerberus-ea-interface-map.md` |
+| EA 风控态（2026-07-31 接入） | Cerberus `ng_status.json`（MT5 终端 `MQL5/Files/`，只读） | EA 约 30 秒写一次；陈旧 >120 秒即忽略 | 风险标注：`PAUSED_NEWS`/`PAUSED_VOLATILITY`/`regime_blocked`/`hour.blocked` 全部转为 warnings（军师模式不阻断）；只消费风险机制字段，不含持仓/盈亏。详见 `docs/cerberus-ea-interface-map.md` |
 
 ## 性能架构（2026-07-31）
 
@@ -46,15 +56,22 @@ D:\XAU\TradingAgents\.venv\Scripts\python.exe D:\XAU\TradingAgents\scripts\run_x
 ```json
 {
   "updated_at": "2026-07-31T00:10:00+00:00",
+  "source": "https://cdn-nfs.faireconomy.media/ff_calendar_thisweek.xml",
+  "schema_version": 1,
   "events": [
     {"title": "美国核心 PCE", "utc": "2026-07-31T12:30:00+00:00", "impact": "high"}
   ]
 }
 ```
 
-- 日历超过 36 小时未更新 → 视为不可信（unverified → WATCH）。
+- 信任标记：`source`（非空字符串）与 `schema_version`（=1）由 `refresh_calendar_from_url` 代码生成写入，
+  缺失任一即视为手工/残留文件（不可信 → unverified）。手工维护请用 `event_context.json` 覆写，不要手写 calendar.json。
+- 日历超过 36 小时未更新 → 视为不可信（unverified），事件信息随报告标注"未核验"（并携带具体原因），不阻断分析。
+- 高影响事件落在周末（周六/周日）→ 日期数据错误，同样判 unverified（美国宏观数据从不在周末发布）。
 - 手工覆写仍优先：`event_context.json` 写入合法的 `verified_clear`/`wait` 即直接生效。
 - 可选自动拉取：设置 `XAU_CONSOLE_CALENDAR_URL` 指向一个返回同格式 JSON 的地址，每次评估前尝试刷新，失败回退本地文件。
+  - 只接受 http/https 源（拒绝 file:// 等本地协议）；响应体上限 2 MiB，超限拒绝；
+  - XML 解析拒绝带 DOCTYPE/ENTITY 的文档（实体扩展攻击面收敛）。
 
 ## 报告验收规则（validator）
 
@@ -65,7 +82,9 @@ D:\XAU\TradingAgents\.venv\Scripts\python.exe D:\XAU\TradingAgents\scripts\run_x
   - entry_zone / take_profit / stop_loss 必须可解析为价格；
   - 几何约束：多头止盈高于入场中点、止损低于入场中点（空头对称）；
   - 幅度约束（快照含 bid 与 ATR 时）：入场中点偏离 bid ≤ 3×ATR，止盈距离 ≤ 5×ATR，止损距离 ≤ 3×ATR。
-- 方向建议保留：ANALYSE 与 WATCH（事件未核验）两种门态都要求输出方向计划；WATCH 下报告须在 risk_note 中注明"仅技术面、未经事件确认"。
+- 方向建议（军师模式）：所有门态（除 BLOCKED）都要求输出完整方向计划；gate.warnings
+  注入 prompt 并要求 risk_note 逐条覆盖；验收时 `report.gate_warnings`（闸门风险标注）
+  与 `report.validation_warnings`（方向纪律标注）都附加到报告，随报告呈现（不阻断验收）。
 
 ## 传感器与探针脚本
 
