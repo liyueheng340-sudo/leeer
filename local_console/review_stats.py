@@ -97,6 +97,24 @@ def _mode_key(record: JobRecord) -> str | None:
     return mode if mode in ("scalp", "swing") else None
 
 
+def _vol_regime_key(record: JobRecord) -> str | None:
+    """按波动环境分组（iv_vs_hv 已随 gate_payload 落盘）。
+
+    映射：iv_vs_hv=high → vol_high；low → vol_low；neutral → vol_neutral；
+    IV 层不可用或字段缺失 → None（不参与该维度聚合）。
+    """
+    gate = record.gate
+    if not isinstance(gate, dict):
+        return None
+    iv = gate.get("iv")
+    if not isinstance(iv, dict):
+        return None
+    iv_vs_hv = iv.get("iv_vs_hv")
+    if iv_vs_hv in ("high", "low", "neutral"):
+        return f"vol_{iv_vs_hv}"
+    return None
+
+
 def compute_context_stats(records: list[JobRecord]) -> dict[str, Any]:
     """按交易员关心的单一维度切分复盘结果，回答"我的流程在什么情境下有 edge"。
 
@@ -109,5 +127,6 @@ def compute_context_stats(records: list[JobRecord]) -> dict[str, Any]:
         "by_direction": _grouped_stats(records, _direction_key),
         "by_prompt_version": _grouped_stats(records, _prompt_version_key),
         "by_mode": _grouped_stats(records, _mode_key),
+        "by_vol_regime": _grouped_stats(records, _vol_regime_key),
         "disclaimer": MEASUREMENT_DISCLAIMER,
     }

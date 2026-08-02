@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 
-from .guard import GateResult
+from .guard import ACTIVE_SESSION_LABELS, GateResult
 from .jobs import JobKind, JobMode
 from .snapshot_facts import _key_levels
 
@@ -44,7 +44,10 @@ VISIBLE_TEXT_KEYS = ("summary", "invalidation", "next_observation")
 #       SL 上限 5 ATR、止盈分批（第一目标 1:1.5 并让利润奔跑）、禁隔夜默认。
 #       新增 IV 维度（iv.py 抓取 GLD 期权链）：ATM IV / IV vs HV / 偏斜 / IV Rank，
 #       作为波动环境过滤器注入 prompt，高 IV 偏突破/趋势、低 IV 偏区间/回归。
-PROMPT_VERSION = "1.6.0"
+# 1.7.0：A1 交易时段上下文（session_context：时段 label/距伦敦定盘/COMEX 开盘分钟数）
+#       与 A3 点差历史分位（tick_health.spread_percentile）注入 prompt——
+#       位置感增强（外部模型吸收清单改进 1）。
+PROMPT_VERSION = "1.7.0"
 
 # 各模式的纪律参数（report_validation 复用同一张表，保证 prompt 与验收一致）。
 MODE_RULES: dict[str, dict[str, object]] = {
@@ -312,6 +315,39 @@ def build_prompt(
         iv_rule = _iv_analysis_rule(iv_context, mode)
         if iv_rule:
             output_rules.append(iv_rule)
+    session_context = snapshot.get("session_context")
+    if isinstance(session_context, dict) and session_context.get("status") == "ok":
+        label = session_context.get("label")
+        name = session_context.get("name")
+        fix_min = session_context.get("minutes_to_london_fix")
+        comex_min = session_context.get("minutes_to_comex_open")
+        parts = [
+            "session_context 是确定性交易时段事实（London/ET 时区，含夏令时）："
+        ]
+        if isinstance(label, str) and isinstance(name, str):
+            parts.append(
+                f"当前时段 {name}（{label}），"
+                + ("属活跃交易时段" if label in ACTIVE_SESSION_LABELS
+                   else "属非活跃时段，注意点差与滑点")
+            )
+        if isinstance(fix_min, (int, float)):
+            parts.append(f"距下一次伦敦定盘约 {int(fix_min)} 分钟（定盘为波动放大点，事件前后宜收敛档位）")
+        if isinstance(comex_min, (int, float)):
+            parts.append(f"距 COMEX 开盘约 {int(comex_min)} 分钟（纽约期货开盘流动性切换点）")
+        parts.append("时段信息只作位置感上下文，不改变方向判定")
+        output_rules.append("；".join(parts))
+    tick = snapshot.get("tick_health")
+    if isinstance(tick, dict) and isinstance(tick.get("spread_percentile"), (int, float)):
+        percentile = float(tick["spread_percentile"])
+        if percentile >= 0.8:
+            output_rules.append(
+                f"tick_health.spread_percentile {percentile:.0%}：当前点差处于近期历史高位"
+                "（相对本经纪商常态），交易成本偏高，建议收紧仓位或等待点差收敛"
+            )
+        elif percentile <= 0.2:
+            output_rules.append(
+                f"tick_health.spread_percentile {percentile:.0%}：当前点差处于近期历史低位，交易成本环境良好"
+            )
     if gate.warnings:
         cleaned = [_clean_warning(w) for w in gate.warnings]
         output_rules.append(

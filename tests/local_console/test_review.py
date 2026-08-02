@@ -59,10 +59,14 @@ def short_report() -> dict[str, object]:
     }
 
 
-def gate_payload(action: str, version: str = "1.0.0", resonance: dict | None = None) -> dict:
+def gate_payload(
+    action: str, version: str = "1.0.0", resonance: dict | None = None, iv: dict | None = None
+) -> dict:
     payload = {"action": action, "prompt_version": version}
     if resonance is not None:
         payload["resonance"] = resonance
+    if iv is not None:
+        payload["iv"] = iv
     return payload
 
 
@@ -296,6 +300,37 @@ class ContextStatsTests(unittest.TestCase):
 
         self.assertEqual(1.0, contexts["by_prompt_version"]["1.0.0"]["win_rate"])
         self.assertEqual(0.0, contexts["by_prompt_version"]["1.1.0"]["win_rate"])
+
+    def test_groups_by_vol_regime(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = JobStore(Path(directory))
+            self.completed_job(
+                store,
+                {"outcome": "TP_FIRST", "r_multiple": 1.0},
+                gate_payload("ANALYSE", iv={"iv_vs_hv": "high"}),
+            )
+            self.completed_job(
+                store,
+                {"outcome": "SL_FIRST", "r_multiple": -1.0},
+                gate_payload("ANALYSE", iv={"iv_vs_hv": "high"}),
+            )
+            self.completed_job(
+                store,
+                {"outcome": "TP_FIRST", "r_multiple": 1.0},
+                gate_payload("ANALYSE", iv={"iv_vs_hv": "low"}),
+            )
+            # IV 层不可用的任务不参与 vol_regime 维度聚合
+            self.completed_job(
+                store,
+                {"outcome": "SL_FIRST", "r_multiple": -1.0},
+                gate_payload("ANALYSE", iv=None),
+            )
+
+            contexts = compute_context_stats(store.list_recent())
+
+        self.assertEqual(0.5, contexts["by_vol_regime"]["vol_high"]["win_rate"])
+        self.assertEqual(1.0, contexts["by_vol_regime"]["vol_low"]["win_rate"])
+        self.assertNotIn("vol_na", contexts["by_vol_regime"])
 
     def test_jobs_without_review_are_ignored(self):
         with tempfile.TemporaryDirectory() as directory:

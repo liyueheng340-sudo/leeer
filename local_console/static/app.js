@@ -490,6 +490,7 @@ function renderContextStats(contexts) {
     contextBlockHtml("按共振", contexts.by_resonance),
     contextBlockHtml("按方向", contexts.by_direction, DIRECTION_LABELS),
     contextBlockHtml("按模式", contexts.by_mode, MODE_LABELS),
+    contextBlockHtml("波动环境", contexts.by_vol_regime, VOL_REGIME_LABELS),
   ].join("");
   el.innerHTML = html || '<p class="empty-state">情境样本积累中。</p>';
 }
@@ -543,6 +544,8 @@ async function toggleAuto() {
 
 /* ─── 交易模式切换：scalp（剥头皮）/ swing（日内波段），随任务快照记录 ─── */
 const MODE_LABELS = { scalp: "剥头皮", swing: "日内波段" };
+/* 波动环境复盘分组（review_stats by_vol_regime；vol_na 永不出现） */
+const VOL_REGIME_LABELS = { vol_high: "高IV", vol_low: "低IV", vol_neutral: "中性" };
 function renderMode(mode) {
   const state = byId("mode-state");
   if (!state) return;

@@ -553,7 +553,7 @@ class NewsSourceValidationTests(unittest.TestCase):
     def test_prompt_version_upgraded_for_news(self):
         # 版本锁：1.6.0 双模式（scalp/swing）+ IV 波动层——模式纪律随任务快照记录，
         # IV（GLD 期权链）作为波动环境过滤器注入 prompt；方向/点位纪律仍为风险标注。
-        self.assertEqual("1.6.0", PROMPT_VERSION)
+        self.assertEqual("1.7.0", PROMPT_VERSION)
 
     def test_prompt_contains_event_cross_validation_rule(self):
         """verified_clear 状态的 prompt 应包含事件交叉验证规则。"""
@@ -677,6 +677,47 @@ class EdgeDisciplineValidationTests(unittest.TestCase):
 
         self.assertIn("关键价位层", prompt)
         self.assertIn("4000", prompt)
+
+    def test_prompt_injects_session_context(self):
+        snapshot = analyse_snapshot()
+        snapshot["session_context"] = {
+            "status": "ok",
+            "label": "london",
+            "name": "伦敦早盘",
+            "minutes_to_london_fix": 30,
+            "minutes_to_comex_open": 45,
+        }
+
+        prompt = build_prompt(snapshot, ANALYSE_GATE, "brief")
+
+        self.assertIn("session_context", prompt)
+        self.assertIn("伦敦早盘", prompt)
+        self.assertIn("30", prompt)
+        self.assertIn("45", prompt)
+
+    def test_prompt_omits_session_context_when_unavailable(self):
+        prompt = build_prompt(analyse_snapshot(), ANALYSE_GATE, "brief")
+
+        self.assertNotIn("session_context", prompt)
+
+    def test_prompt_annotates_high_spread_percentile(self):
+        snapshot = analyse_snapshot()
+        snapshot["tick_health"] = {"available": True, "spread_percentile": 0.9}
+
+        prompt = build_prompt(snapshot, ANALYSE_GATE, "brief")
+
+        self.assertIn("spread_percentile", prompt)
+        self.assertIn("历史高位", prompt)
+
+    def test_prompt_omits_neutral_spread_percentile(self):
+        snapshot = analyse_snapshot()
+        snapshot["tick_health"] = {"available": True, "spread_percentile": 0.5}
+
+        prompt = build_prompt(snapshot, ANALYSE_GATE, "brief")
+
+        # 中性分位不产生规则（键名随 facts 序列化必然存在，断言规则文本）
+        self.assertNotIn("历史高位", prompt)
+        self.assertNotIn("历史低位", prompt)
 
 class MarketRegimeValidationTests(unittest.TestCase):
     """1.5.0 军师模式：市场状态纪律（震荡禁强方向/强趋势顺向/RSI 极端禁追）改为风险标注。"""

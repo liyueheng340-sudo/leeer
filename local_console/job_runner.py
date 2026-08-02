@@ -15,6 +15,12 @@ from .housekeeping import run_reviews_safe
 from .jobs import TERMINAL_STAGES
 from .market_capture import capture_market_data, safe_ea_status, safe_macro, safe_news
 from .runlog import log_event
+from .session_context import (
+    SESSION_CONTEXT_KEY,
+    SESSION_LABEL_KEY,
+    compute_session_context,
+)
+from .spread_percentile import compute_spread_percentile
 
 
 def safe_iv(service: object) -> dict[str, object]:
@@ -51,6 +57,18 @@ def run_job(service: object, job_id: str) -> None:
                 market_data_runner=service.market_data_runner,
                 snapshot_runner=service.snapshot_runner,
                 tick_runner=service.tick_runner,
+            )
+            # A1 交易时段上下文（纯时间函数，失败安全）：注入快照，guard 据此
+            # 给出非活跃时段流动性标注（guard.session_downgrade_reason 消费 label），
+            # 完整上下文随 facts 进 prompt。
+            session = compute_session_context()
+            if session.get("status") == "ok":
+                snapshot[SESSION_LABEL_KEY] = session["label"]
+                snapshot[SESSION_CONTEXT_KEY] = session
+            # A3 点差历史分位（读已落盘任务，失败安全）：样本不足如实返回 None。
+            # 复用 service.store（同一把 JobStore 锁），不新建实例。
+            tick_health["spread_percentile"] = compute_spread_percentile(
+                tick_health.get("spread_median"), service.store
             )
             service._advance(
                 job_id,
