@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from tradingagents.agents.schemas import ResearchPlan, render_research_plan
 from tradingagents.agents.utils.agent_utils import (
     get_instrument_context_from_state,
@@ -13,17 +15,19 @@ from tradingagents.agents.utils.structured import (
     invoke_structured_or_freetext,
 )
 
+logger = logging.getLogger(__name__)
+
 
 def create_research_manager(llm):
     structured_llm = bind_structured(llm, ResearchPlan, "Research Manager")
 
     def research_manager_node(state) -> dict:
-        instrument_context = get_instrument_context_from_state(state)
-        history = state["investment_debate_state"].get("history", "")
+        try:
+            instrument_context = get_instrument_context_from_state(state)
+            investment_debate_state = state.get("investment_debate_state", {})
+            history = investment_debate_state.get("history", "")
 
-        investment_debate_state = state["investment_debate_state"]
-
-        prompt = f"""As the Research Manager and debate facilitator, your role is to critically evaluate this round of debate and deliver a clear, actionable investment plan for the trader.
+            prompt = f"""As the Research Manager and debate facilitator, your role is to critically evaluate this round of debate and deliver a clear, actionable investment plan for the trader.
 
 {instrument_context}
 
@@ -45,26 +49,32 @@ Commit to a clear stance whenever the debate's strongest arguments warrant one; 
 
 {NO_EXTERNAL_TOOLS}""" + get_language_instruction()
 
-        investment_plan = invoke_structured_or_freetext(
-            structured_llm,
-            llm,
-            prompt,
-            render_research_plan,
-            "Research Manager",
-        )
+            investment_plan = invoke_structured_or_freetext(
+                structured_llm,
+                llm,
+                prompt,
+                render_research_plan,
+                "Research Manager",
+            )
 
-        new_investment_debate_state = {
-            "judge_decision": investment_plan,
-            "history": investment_debate_state.get("history", ""),
-            "bear_history": investment_debate_state.get("bear_history", ""),
-            "bull_history": investment_debate_state.get("bull_history", ""),
-            "current_response": investment_plan,
-            "count": investment_debate_state["count"],
-        }
+            new_investment_debate_state = {
+                "judge_decision": investment_plan,
+                "history": investment_debate_state.get("history", ""),
+                "bear_history": investment_debate_state.get("bear_history", ""),
+                "bull_history": investment_debate_state.get("bull_history", ""),
+                "current_response": investment_plan,
+                "count": investment_debate_state.get("count", 0),
+            }
 
-        return {
-            "investment_debate_state": new_investment_debate_state,
-            "investment_plan": investment_plan,
-        }
+            return {
+                "investment_debate_state": new_investment_debate_state,
+                "investment_plan": investment_plan,
+            }
+        except Exception as exc:
+            logger.error("Research Manager failed: %s", exc)
+            return {
+                "investment_debate_state": state.get("investment_debate_state", {}),
+                "investment_plan": f"Error: Research Manager unavailable: {exc}",
+            }
 
     return research_manager_node

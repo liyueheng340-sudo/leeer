@@ -1,5 +1,6 @@
 import datetime
 import os
+import re
 import sys
 import time
 from collections import deque
@@ -900,8 +901,6 @@ def extract_content_string(content):
     """Extract string content from various message formats.
     Returns None if no meaningful text content is found.
     """
-    import ast
-
     def is_empty(val):
         """Check if value is empty using Python's truthiness."""
         if val is None or val == '':
@@ -910,10 +909,17 @@ def extract_content_string(content):
             s = val.strip()
             if not s:
                 return True
-            try:
-                return not bool(ast.literal_eval(s))
-            except (ValueError, SyntaxError):
-                return False  # Can't parse = real text
+            # Detect common empty Python literals without ast.literal_eval (DoS risk)
+            if s in ("[]", "{}", "()", "None", "False", "0", "0.0", '""', "''"):
+                return True
+            # Numeric zero in any format (0.00, 0e0, -0, +0.0): safe parse, no ast.literal_eval
+            if re.fullmatch(r"[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?", s):
+                try:
+                    if float(s) == 0.0:
+                        return True
+                except ValueError:
+                    pass
+            return False
         return not bool(val)
 
     if is_empty(content):
@@ -1267,13 +1273,20 @@ def run_analysis(checkpoint: bool | None = None):
             default=str(default_path)
         ).strip()
         save_path = Path(save_path_str)
+        # Path traversal guard: restrict saves to cwd subtree
+        try:
+            _cwd = Path.cwd().resolve()
+            _resolved = save_path.resolve()
+            _resolved.relative_to(_cwd)
+        except ValueError:
+            console.print(f"[red]Error: save path must be inside {_cwd}[/red]")
+            raise typer.Exit(code=1) from None
         try:
             report_file = save_report_to_disk(final_state, selections["ticker"], save_path)
             console.print(f"\n[green]✓ Report saved to:[/green] {save_path.resolve()}")
             console.print(f"  [dim]Complete report:[/dim] {report_file.name}")
         except Exception as e:
             console.print(f"[red]Error saving report: {e}[/red]")
-
     # Prompt to display full report
     display_choice = typer.prompt("\nDisplay full report on screen?", default="Y").strip().upper()
     if display_choice in ("Y", "YES", ""):

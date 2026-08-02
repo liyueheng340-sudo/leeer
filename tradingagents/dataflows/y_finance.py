@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime
 from typing import Annotated
 
@@ -13,6 +14,8 @@ from .stockstats_utils import (
     yf_retry,
 )
 from .symbol_utils import NoMarketDataError, normalize_symbol
+
+logger = logging.getLogger(__name__)
 
 
 def get_YFin_data_online(
@@ -188,7 +191,7 @@ def get_stock_stats_indicators_window(
     except NoMarketDataError:
         raise  # Unknown/delisted symbol — let the router emit the sentinel
     except Exception as e:
-        print(f"Error getting bulk stockstats data: {e}")
+        logger.warning("Bulk stockstats failed for %s %s, falling back: %s", symbol, indicator, e)
         # Fallback to original implementation if bulk method fails
         ind_string = ""
         curr_date_dt = datetime.strptime(curr_date, "%Y-%m-%d")
@@ -263,10 +266,10 @@ def get_stockstats_indicator(
     except NoMarketDataError:
         raise  # Unknown/delisted symbol — let the router emit the sentinel
     except Exception as e:
-        print(
-            f"Error getting stockstats indicator data for indicator {indicator} on {curr_date}: {e}"
+        logger.warning(
+            "Failed to get indicator %s for %s on %s: %s", indicator, symbol, curr_date, e
         )
-        return ""
+        raise NoMarketDataError(symbol, normalize_symbol(symbol), f"indicator {indicator} failed: {e}") from e
 
     return str(indicator_value)
 
@@ -335,7 +338,7 @@ def get_fundamentals(
     except NoMarketDataError:
         raise
     except Exception as e:
-        return f"Error retrieving fundamentals for {ticker}: {str(e)}"
+        raise NoMarketDataError(ticker, canonical, f"fundamentals retrieval failed: {e}") from e
 
 
 def get_balance_sheet(
@@ -370,7 +373,7 @@ def get_balance_sheet(
     except NoMarketDataError:
         raise
     except Exception as e:
-        return f"Error retrieving balance sheet for {ticker}: {str(e)}"
+        raise NoMarketDataError(ticker, canonical, f"balance sheet retrieval failed: {e}") from e
 
 
 def get_cashflow(
@@ -405,7 +408,7 @@ def get_cashflow(
     except NoMarketDataError:
         raise
     except Exception as e:
-        return f"Error retrieving cash flow for {ticker}: {str(e)}"
+        raise NoMarketDataError(ticker, canonical, f"cash flow retrieval failed: {e}") from e
 
 
 def get_income_statement(
@@ -440,7 +443,7 @@ def get_income_statement(
     except NoMarketDataError:
         raise
     except Exception as e:
-        return f"Error retrieving income statement for {ticker}: {str(e)}"
+        raise NoMarketDataError(ticker, canonical, f"income statement retrieval failed: {e}") from e
 
 
 def get_insider_transactions(
@@ -467,4 +470,4 @@ def get_insider_transactions(
         return header + csv_string
 
     except Exception as e:
-        return f"Error retrieving insider transactions for {ticker}: {str(e)}"
+        raise NoMarketDataError(ticker, canonical, f"insider transactions retrieval failed: {e}") from e

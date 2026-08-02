@@ -196,7 +196,7 @@ def route_to_vendor(method: str, *args, **kwargs):
     first_error: Exception | None = None
     for vendor in vendor_chain:
         vendor_impl = VENDOR_METHODS[method][vendor]
-        impl_func = vendor_impl[0] if isinstance(vendor_impl, list) else vendor_impl
+        impl_func = vendor_impl
 
         try:
             return impl_func(*args, **kwargs)

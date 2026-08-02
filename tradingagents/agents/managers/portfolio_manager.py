@@ -10,6 +10,8 @@ back gracefully to free-text generation.
 
 from __future__ import annotations
 
+import logging
+
 from tradingagents.agents.schemas import PortfolioDecision, render_pm_decision
 from tradingagents.agents.utils.agent_utils import (
     get_instrument_context_from_state,
@@ -21,26 +23,29 @@ from tradingagents.agents.utils.structured import (
     invoke_structured_or_freetext,
 )
 
+logger = logging.getLogger(__name__)
+
 
 def create_portfolio_manager(llm):
     structured_llm = bind_structured(llm, PortfolioDecision, "Portfolio Manager")
 
     def portfolio_manager_node(state) -> dict:
-        instrument_context = get_instrument_context_from_state(state)
+        try:
+            instrument_context = get_instrument_context_from_state(state)
 
-        history = state["risk_debate_state"]["history"]
-        risk_debate_state = state["risk_debate_state"]
-        research_plan = state["investment_plan"]
-        trader_plan = state["trader_investment_plan"]
+            risk_debate_state = state.get("risk_debate_state", {})
+            history = risk_debate_state.get("history", "")
+            research_plan = state.get("investment_plan", "")
+            trader_plan = state.get("trader_investment_plan", "")
 
-        past_context = state.get("past_context", "")
-        lessons_line = (
-            f"- Lessons from prior decisions and outcomes:\n{past_context}\n"
-            if past_context
-            else ""
-        )
+            past_context = state.get("past_context", "")
+            lessons_line = (
+                f"- Lessons from prior decisions and outcomes:\n{past_context}\n"
+                if past_context
+                else ""
+            )
 
-        prompt = f"""As the Portfolio Manager, synthesize the risk analysts' debate and deliver the final trading decision.
+            prompt = f"""As the Portfolio Manager, synthesize the risk analysts' debate and deliver the final trading decision.
 
 {instrument_context}
 
@@ -66,30 +71,36 @@ Be decisive and ground every conclusion in specific evidence from the analysts.
 
 {NO_EXTERNAL_TOOLS}{get_language_instruction()}"""
 
-        final_trade_decision = invoke_structured_or_freetext(
-            structured_llm,
-            llm,
-            prompt,
-            render_pm_decision,
-            "Portfolio Manager",
-        )
+            final_trade_decision = invoke_structured_or_freetext(
+                structured_llm,
+                llm,
+                prompt,
+                render_pm_decision,
+                "Portfolio Manager",
+            )
 
-        new_risk_debate_state = {
-            "judge_decision": final_trade_decision,
-            "history": risk_debate_state["history"],
-            "aggressive_history": risk_debate_state["aggressive_history"],
-            "conservative_history": risk_debate_state["conservative_history"],
-            "neutral_history": risk_debate_state["neutral_history"],
-            "latest_speaker": "Judge",
-            "current_aggressive_response": risk_debate_state["current_aggressive_response"],
-            "current_conservative_response": risk_debate_state["current_conservative_response"],
-            "current_neutral_response": risk_debate_state["current_neutral_response"],
-            "count": risk_debate_state["count"],
-        }
+            new_risk_debate_state = {
+                "judge_decision": final_trade_decision,
+                "history": risk_debate_state.get("history", ""),
+                "aggressive_history": risk_debate_state.get("aggressive_history", ""),
+                "conservative_history": risk_debate_state.get("conservative_history", ""),
+                "neutral_history": risk_debate_state.get("neutral_history", ""),
+                "latest_speaker": "Judge",
+                "current_aggressive_response": risk_debate_state.get("current_aggressive_response", ""),
+                "current_conservative_response": risk_debate_state.get("current_conservative_response", ""),
+                "current_neutral_response": risk_debate_state.get("current_neutral_response", ""),
+                "count": risk_debate_state.get("count", 0),
+            }
 
-        return {
-            "risk_debate_state": new_risk_debate_state,
-            "final_trade_decision": final_trade_decision,
-        }
+            return {
+                "risk_debate_state": new_risk_debate_state,
+                "final_trade_decision": final_trade_decision,
+            }
+        except Exception as exc:
+            logger.error("Portfolio Manager failed: %s", exc)
+            return {
+                "risk_debate_state": state.get("risk_debate_state", {}),
+                "final_trade_decision": f"Error: Portfolio Manager unavailable: {exc}",
+            }
 
     return portfolio_manager_node

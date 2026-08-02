@@ -40,6 +40,7 @@ from tradingagents.agents.utils.structured import (
     bind_structured,
     invoke_structured_or_freetext,
 )
+from tradingagents.dataflows.interface import route_to_vendor
 from tradingagents.dataflows.reddit import fetch_reddit_posts
 from tradingagents.dataflows.stocktwits import fetch_stocktwits_messages
 
@@ -67,7 +68,7 @@ def create_sentiment_analyst(llm):
         # Pre-fetch all three sources. Each fetcher degrades gracefully and
         # returns a string (no exceptions surface from here), so the LLM
         # always sees something — either real data or a clear placeholder.
-        news_block = get_news.func(ticker, start_date, end_date)
+        news_block = route_to_vendor("get_news", ticker, start_date, end_date)
         stocktwits_block = fetch_stocktwits_messages(ticker, limit=30)
         reddit_block = fetch_reddit_posts(ticker)
 

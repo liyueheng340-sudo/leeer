@@ -13,6 +13,13 @@ from pathlib import Path
 def write_report_tree(final_state: dict, ticker: str, save_path) -> Path:
     """Save a completed run's reports to ``save_path``; return the complete-report path."""
     save_path = Path(save_path)
+    # Path traversal guard
+    _cwd = Path.cwd().resolve()
+    _resolved = save_path.resolve()
+    try:
+        _resolved.relative_to(_cwd)
+    except ValueError as exc:
+        raise ValueError(f"save_path must be inside {_cwd}, got {save_path}") from exc
     save_path.mkdir(parents=True, exist_ok=True)
     sections = []
 
