@@ -23,12 +23,26 @@ from local_console.config import ConsoleConfig
 NOW = datetime(2026, 7, 31, 12, 0, tzinfo=UTC)
 
 
-def write_calendar(path: Path, events: list[dict[str, object]], updated_at: str | None = None) -> None:
+def write_calendar(
+    path: Path,
+    events: list[dict[str, object]],
+    updated_at: str | None = None,
+    *,
+    with_trust_marker: bool = True,
+) -> None:
+    """Write a calendar cache file.
+
+    with_trust_marker=True 模拟 refresh_calendar_from_url 生成的合法缓存
+    （带 source/schema_version 标记）；False 模拟手工残留文件。
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
+    payload: dict[str, object] = {
         "updated_at": updated_at or NOW.isoformat(),
         "events": events,
     }
+    if with_trust_marker:
+        payload["source"] = "https://test.example/calendar.xml"
+        payload["schema_version"] = 1
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
 
@@ -59,7 +73,7 @@ class CalendarEvaluationTests(unittest.TestCase):
     def test_high_impact_event_inside_window_is_wait(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "calendar.json"
-            # 事件在 15 分钟后，处于前 30 分钟缓冲窗内
+            # 事件在 15 分钟后，处于前 60 分钟缓冲窗内
             write_calendar(path, [pce_event(0.25)])
 
             result = evaluate_calendar(path, NOW)
@@ -98,6 +112,82 @@ class CalendarEvaluationTests(unittest.TestCase):
 
         self.assertEqual("unverified", result["status"])
 
+    def test_handwritten_calendar_without_source_marker_is_unverified(self):
+        """无 source 标记的手工残留文件必须被拒绝，绝不据此 WAIT（事故回归）。"""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "calendar.json"
+            # 模拟本次事故：手工文件把非农错写成 8/1（周六），且无 source 标记
+            bogus = {
+                "title": "美国 7 月非农就业报告",
+                "utc": "2026-08-01T12:30:00+00:00",
+                "impact": "high",
+            }
+            write_calendar(path, [bogus], with_trust_marker=False)
+
+            result = evaluate_calendar(path, NOW)
+
+        self.assertEqual("unverified", result["status"])
+        self.assertNotEqual("wait", result["status"])
+
+    def test_handwritten_calendar_without_schema_version_is_unverified(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "calendar.json"
+            payload = {
+                "updated_at": NOW.isoformat(),
+                "source": "https://test.example/calendar.xml",
+                "events": [pce_event(0.25)],  # 在窗口内，若被信任会 WAIT
+            }
+            path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+            result = evaluate_calendar(path, NOW)
+
+        self.assertEqual("unverified", result["status"])
+
+    def test_high_impact_event_on_weekend_is_unverified(self):
+        """高影响事件落在周末 = 日期数据错误，判 unverified 而非 WAIT（事故回归）。"""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "calendar.json"
+            # 2026-08-01 是周六：合法缓存文件里出现周末 high 事件同样拒绝
+            bogus = {
+                "title": "美国 7 月非农就业报告",
+                "utc": "2026-08-01T12:30:00+00:00",
+                "impact": "high",
+            }
+            write_calendar(path, [bogus])
+
+            result = evaluate_calendar(path, NOW)
+
+        self.assertEqual("unverified", result["status"])
+        self.assertIn("周末", result["reason"])
+        self.assertNotEqual("wait", result["status"])
+
+    def test_weekend_event_past_48h_also_unverified(self):
+        """周末 high 事件无论过去/未来一律拒绝，防止手工日期错误绕过后窗。"""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "calendar.json"
+            bogus = {
+                "title": "美国 CPI",
+                "utc": "2026-08-02T12:30:00+00:00",  # 周日
+                "impact": "high",
+            }
+            write_calendar(path, [bogus])
+
+            result = evaluate_calendar(path, NOW)
+
+        self.assertEqual("unverified", result["status"])
+
+    def test_friday_high_impact_event_still_waits(self):
+        """工作日（周五）的高影响事件正常触发 WAIT，合理性校验不误伤。"""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "calendar.json"
+            # 2026-07-31 是周五，处于前 60 分钟窗口内
+            write_calendar(path, [pce_event(0.25)])
+
+            result = evaluate_calendar(path, NOW)
+
+        self.assertEqual("wait", result["status"])
+        self.assertIn("美国核心 PCE", result["reason"])
+
     def test_window_boundaries_cover_before_and_after_buffers(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "calendar.json"
@@ -131,7 +221,7 @@ class CalendarEvaluationTests(unittest.TestCase):
                 "utc": (NOW - timedelta(hours=12)).isoformat(),
                 "impact": "high",
             }
-            future_nfp = pce_event(48)  # 48h 后的 NFP
+            future_nfp = pce_event(72)  # 72h 后（周一 8/3，工作日）的 NFP
             future_nfp["title"] = "美国非农就业"
             write_calendar(path, [past_pce, future_nfp])
 
@@ -296,7 +386,7 @@ class CalendarRefreshThrottleTests(unittest.TestCase):
             config = self.make_config(Path(directory))
             write_calendar(config.calendar_path, [])  # mtime=现在，处于 3h 节流窗内
 
-            with patch("local_console.calendar.urlopen") as opener:
+            with patch("local_console.calendar_refresh.urlopen") as opener:
                 refreshed = refresh_calendar_from_url(config)
 
         self.assertFalse(refreshed)
@@ -313,10 +403,10 @@ class CalendarRefreshThrottleTests(unittest.TestCase):
                 def __exit__(self, *_args):
                     return False
 
-                def read(self):
+                def read(self, size: int = -1):
                     return FF_XML_SAMPLE.encode("utf-8")
 
-            with patch("local_console.calendar.urlopen", return_value=FakeResponse()):
+            with patch("local_console.calendar_refresh.urlopen", return_value=FakeResponse()):
                 refreshed = refresh_calendar_from_url(config)
             payload = json.loads(config.calendar_path.read_text(encoding="utf-8"))
 
@@ -331,7 +421,7 @@ class CalendarRefreshThrottleTests(unittest.TestCase):
             stale_time = (NOW - timedelta(hours=10)).timestamp()
             os.utime(config.calendar_path, (stale_time, stale_time))
 
-            with patch("local_console.calendar.urlopen", side_effect=OSError("down")):
+            with patch("local_console.calendar_refresh.urlopen", side_effect=OSError("down")):
                 refreshed = refresh_calendar_from_url(config)
 
         self.assertFalse(refreshed)

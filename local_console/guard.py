@@ -1,4 +1,9 @@
-"""Deterministic gates for MT5 facts, event context and model eligibility."""
+"""Deterministic gates for MT5 facts, event context and model eligibility.
+
+系统宪法（docs/xau-system-constitution.md）：分析层永不锁死——系统是军师不是保安。
+闸门只在第一手数据不可用时 BLOCKED；其余一切（事件窗口、市场状态、流动性、
+共振、点差、EA 风控态）都转为 warnings 标注，随报告呈现给交易者，绝不阻断分析。
+"""
 
 from __future__ import annotations
 
@@ -8,15 +13,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
+from .regime import compute_market_regime
 from .resonance import compute_resonance
 
+GateAction = Literal["ANALYSE", "BLOCKED"]
 
-GateAction = Literal["ANALYSE", "WATCH", "WAIT", "BLOCKED"]
-
-# 点差峰值达到该值（价格单位）即视为异常扩大，ANALYSE 降级为 WATCH。
-# 剥头皮目标 3-5 个点，0.5 已吃掉 10%+ 利润：按 0.5 封顶（常态 0.1-0.3）。
+# 点差峰值达到该值（价格单位）即视为异常扩大，写入标注（剥头皮目标 3-5 个点）。
 SPREAD_DOWNGRADE_THRESHOLD = 0.5
-# 共振明确阈值：|score| ≥ 0.5 才允许 ANALYSE 强方向；否则按保守观察输出。
+# 共振明确阈值：|score| ≥ 0.5 视为方向证据明确；否则标注"共振不明确"。
 RESONANCE_CLEAR_THRESHOLD = 0.5
 # 黄金剥头皮活跃时段（校正 UTC）：伦敦 / 伦敦纽约重叠 / 纽约午盘。
 ACTIVE_SESSION_LABELS = {"london", "london_ny_overlap", "ny_late"}
@@ -28,65 +32,71 @@ class GateResult:
     allow_model: bool
     directional_plan_allowed: bool
     reason: str
+    # 风险标注（军师模式）：不阻断分析，随报告呈现给交易者。
+    warnings: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
 
 
 def tick_downgrade_reason(tick_health: dict[str, object] | None) -> str | None:
-    """返回 tick 传感器触发的降级原因；传感器不可用时不做判断。"""
+    """返回 tick 传感器触发的风险标注；传感器不可用时不做判断。"""
     if not isinstance(tick_health, dict) or tick_health.get("available") is not True:
         return None
     if tick_health.get("stalled") is True:
         detail = str(tick_health.get("stall_reason") or "").strip()
         suffix = f"（{detail}）" if detail else ""
-        return f"报价流停滞{suffix}，降级为观察"
+        return f"报价流停滞{suffix}"
     spread_max = tick_health.get("spread_max")
     if isinstance(spread_max, (int, float)) and spread_max >= SPREAD_DOWNGRADE_THRESHOLD:
-        return f"点差异常扩大（峰值 {spread_max:.2f}），降级为观察"
+        return f"点差异常扩大（峰值 {spread_max:.2f}），交易成本偏高"
     return None
 
 
-def resonance_downgrade_reason(snapshot: dict[str, object]) -> str | None:
-    """共振不明确时降级：只有结构数据存在时才判断，缺失不降级。
-
-    实测复盘：ANALYSE 组（事件全核验）平均 R -0.23，WATCH 组 +0.54——
-    模型在"全条件完美"时过度自信。共振不明确 = 方向证据不足，按保守输出。
-    """
-    structure = snapshot.get("timeframe_structure")
-    if not isinstance(structure, dict) or not structure:
-        return None
-    resonance = compute_resonance(snapshot)
+def resonance_downgrade_reason(resonance: dict[str, object]) -> str | None:
+    """共振不明确时标注：只有结构数据存在时才判断，缺失不标注。"""
     score = resonance.get("score")
     if not isinstance(score, (int, float)) or abs(score) >= RESONANCE_CLEAR_THRESHOLD:
         return None
-    return f"多周期共振不明确（score {score:+.2f}），降级为观察"
+    return f"多周期共振不明确（score {score:+.2f}），方向证据一般"
+
+
+def regime_downgrade_reason(regime: dict[str, object]) -> str | None:
+    """震荡市标注：双周期（M15+H1）ADX 均 < 20 时方向证据不足。
+
+    EA 精华：趋势跟踪只在 ADX ≥ 25 的强趋势市开单；震荡市追单/开仓胜率
+    天然偏低。标注供交易者参考，不阻断方向建议。
+    只消费已收盘 K 线的确定性指标，指标缺失时不标注。
+    """
+    if regime.get("available") is not True or regime.get("regime") != "ranging":
+        return None
+    return "市场处于震荡市（双周期 ADX < 20），趋势方向证据不足"
 
 
 def session_downgrade_reason(snapshot: dict[str, object]) -> str | None:
-    """非活跃时段流动性不足，剥头皮胜率天然偏低；缺失 session_label 不降级。"""
+    """非活跃时段流动性不足标注；缺失 session_label 不标注。"""
     label = snapshot.get("session_label")
     if not isinstance(label, str) or not label:
         return None
     if label not in ACTIVE_SESSION_LABELS:
-        return f"当前时段 {label} 流动性不足，降级为观察"
+        return f"当前时段 {label} 流动性不足，注意点差与滑点"
     return None
 
 
-def ea_downgrade_reason(ea_status: dict[str, object] | None) -> tuple[str, str] | None:
-    """返回 Cerberus EA 风控态触发的降级 (level, reason)；无需降级时返回 None。
+def ea_downgrade_reason(ea_status: dict[str, object] | None) -> str | None:
+    """返回 Cerberus EA 风控态触发的风险标注；无需标注时返回 None。
 
     只消费风险机制字段（status / regime_blocked / hour_blocked），绝不读取
-    持仓与盈亏——后者是事后测量，不构成预测证据（HY3 纪律）。映射只降级：
-    PAUSED_NEWS → WAIT（禁模型，对齐事件窗口语义）；
-    PAUSED_VOLATILITY / regime_blocked / hour_blocked → WATCH（技术面方向建议须带警示）。
-    PAUSED_MANUAL / PAUSED_SCHEDULE 是操作选择而非市场证据，不降级。
+    持仓与盈亏——后者是事后测量，不构成预测证据（HY3 纪律）。所有风险机制
+    均转为标注（军师模式不阻断）：PAUSED_NEWS / PAUSED_VOLATILITY /
+    regime_blocked / hour_blocked 随报告呈现。PAUSED_MANUAL / PAUSED_SCHEDULE
+    是操作选择而非市场证据，不标注。
     """
     if not isinstance(ea_status, dict) or ea_status.get("available") is not True:
         return None
     status = ea_status.get("status")
     if status == "PAUSED_NEWS":
-        return ("WAIT", "EA 风控处于新闻事件窗口（Cerberus），禁模型分析")
+        return "EA 风控处于新闻事件窗口（Cerberus），波动可能剧烈"
     reasons: list[str] = []
     if status == "PAUSED_VOLATILITY":
         reasons.append("EA 风控触发波动率熔断")
@@ -95,7 +105,7 @@ def ea_downgrade_reason(ea_status: dict[str, object] | None) -> tuple[str, str] 
     if ea_status.get("hour_blocked") is True:
         reasons.append("EA 报告当前时段为高危波动窗口")
     if reasons:
-        return ("WATCH", "；".join(reasons) + "，降级为观察")
+        return "；".join(reasons)
     return None
 
 
@@ -105,6 +115,8 @@ def evaluate_gate(
     now: datetime,
     tick_health: dict[str, object] | None = None,
     ea_status: dict[str, object] | None = None,
+    resonance: dict[str, object] | None = None,
+    regime: dict[str, object] | None = None,
 ) -> GateResult:
     if snapshot.get("identity_match") is not True or snapshot.get("symbol") != "XAUUSD":
         return GateResult("BLOCKED", False, False, "MT5 经纪商或品种身份不匹配")
@@ -112,28 +124,36 @@ def evaluate_gate(
         return GateResult("BLOCKED", False, False, "MT5 报价不可用")
     if snapshot_age_seconds(snapshot, now) > 60:
         return GateResult("BLOCKED", False, False, "MT5 快照已超过 60 秒")
+    # 军师模式：事件窗口/未核验只标注，绝不锁死（宪法第 1、2 条）。
+    warnings: list[str] = []
     if event_context.get("status") == "wait":
         reason = str(event_context.get("reason") or "已核验的高影响事件窗口")
-        return GateResult("WAIT", False, False, reason)
-    ea_downgrade = ea_downgrade_reason(ea_status)
-    # EA 新闻窗口与已核验事件窗口同级（都禁模型）；优先于"事件未核验"的 WATCH。
-    if ea_downgrade is not None and ea_downgrade[0] == "WAIT":
-        return GateResult("WAIT", False, False, ea_downgrade[1])
-    if event_context.get("status") != "verified_clear":
-        return GateResult("WATCH", True, True, "事件上下文未核验，允许技术面方向建议")
-    # EA 波动率熔断/趋势否决/高危时段与 tick 传感器降级同级。
-    if ea_downgrade is not None and ea_downgrade[0] == "WATCH":
-        return GateResult("WATCH", True, True, ea_downgrade[1])
-    downgrade = tick_downgrade_reason(tick_health)
-    if downgrade is not None:
-        return GateResult("WATCH", True, True, downgrade)
-    resonance_downgrade = resonance_downgrade_reason(snapshot)
-    if resonance_downgrade is not None:
-        return GateResult("WATCH", True, True, resonance_downgrade)
-    session_downgrade = session_downgrade_reason(snapshot)
-    if session_downgrade is not None:
-        return GateResult("WATCH", True, True, session_downgrade)
-    return GateResult("ANALYSE", True, True, "MT5 快照新鲜且事件状态已核验")
+        # reason 已含"高影响事件窗口"前缀（calendar 构造），此处不再重复包裹。
+        warnings.append(reason)
+    elif event_context.get("status") != "verified_clear":
+        unverified_reason = str(event_context.get("reason") or "").strip()
+        suffix = f"（{unverified_reason}）" if unverified_reason else ""
+        warnings.append(f"事件上下文未核验，事件驱动信息仅供参考{suffix}")
+    # 共振/市场状态只算一次：调用方（service）可预计算传入，此处仅兜底。
+    if resonance is None:
+        resonance = compute_resonance(snapshot)
+    if regime is None:
+        regime = compute_market_regime(snapshot)
+    # 收集全部风险标注：EA 风控、tick 健康、共振、市场状态、时段流动性。
+    for warn in (
+        ea_downgrade_reason(ea_status),
+        tick_downgrade_reason(tick_health),
+        resonance_downgrade_reason(resonance),
+        regime_downgrade_reason(regime),
+        session_downgrade_reason(snapshot),
+    ):
+        if warn is not None:
+            warnings.append(warn)
+    if warnings:
+        reason = f"MT5 快照新鲜；分析可用，附带 {len(warnings)} 条风险标注"
+    else:
+        reason = "MT5 快照新鲜且事件状态已核验，无风险标注"
+    return GateResult("ANALYSE", True, True, reason, warnings=tuple(warnings))
 
 
 def valid_quote(snapshot: dict[str, object]) -> bool:

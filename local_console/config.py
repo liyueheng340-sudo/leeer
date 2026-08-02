@@ -8,7 +8,6 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-
 DEFAULT_MT5_PYTHON = Path(r"C:\Users\Administrator\AppData\Local\Programs\Python\Python312\python.exe")
 DEFAULT_MT5_SNAPSHOT_SCRIPT = Path(r"D:\XAU\scripts\mt5_xau_market_context_once.py")
 # Cerberus EA 运行态（接口 B：闸门前向对齐，只读消费）。路径是本机 MT5 终端的
@@ -40,7 +39,7 @@ class ConsoleConfig:
     ea_status_max_age_seconds: float = 120.0
 
     @classmethod
-    def from_repo(cls, repo_root: Path | None = None) -> "ConsoleConfig":
+    def from_repo(cls, repo_root: Path | None = None) -> ConsoleConfig:
         root = (repo_root or Path(__file__).resolve().parents[1]).resolve()
         load_dotenv(root / ".env", override=False)
         state_dir = root / "data_cache" / "xau_analysis_console"
@@ -87,6 +86,14 @@ class ConsoleConfig:
     @property
     def news_cache_path(self) -> Path:
         return self.state_dir / "news_cache.json"
+
+    @property
+    def iv_cache_path(self) -> Path:
+        return self.state_dir / "iv_cache.json"
+
+    @property
+    def iv_rank_cache_path(self) -> Path:
+        return self.state_dir / "iv_rank_history.json"
 
     @property
     def tick_script_path(self) -> Path:

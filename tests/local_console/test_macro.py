@@ -43,9 +43,8 @@ class MacroBackgroundTests(unittest.TestCase):
     def test_missing_api_key_is_unavailable_without_network(self):
         with tempfile.TemporaryDirectory() as directory:
             config = make_config(Path(directory))
-            with patch.dict(os.environ, {}, clear=True):
-                with patch("local_console.macro.requests.get") as getter:
-                    result = fetch_macro_background(config, NOW)
+            with patch.dict(os.environ, {}, clear=True), patch("local_console.macro.requests.get") as getter:
+                result = fetch_macro_background(config, NOW)
 
         self.assertEqual("unavailable", result["status"])
         self.assertIn("FRED_API_KEY", result["reason"])
@@ -54,9 +53,8 @@ class MacroBackgroundTests(unittest.TestCase):
     def test_successful_fetch_returns_daily_background_layer(self):
         with tempfile.TemporaryDirectory() as directory:
             config = make_config(Path(directory))
-            with patch.dict(os.environ, {"FRED_API_KEY": "test-key"}):
-                with patch("local_console.macro.requests.get", side_effect=ok_side_effect) as getter:
-                    result = fetch_macro_background(config, NOW)
+            with patch.dict(os.environ, {"FRED_API_KEY": "test-key"}), patch("local_console.macro.requests.get", side_effect=ok_side_effect) as getter:
+                result = fetch_macro_background(config, NOW)
 
         self.assertEqual("ok", result["status"])
         self.assertEqual("daily", result["frequency"])
@@ -69,10 +67,9 @@ class MacroBackgroundTests(unittest.TestCase):
     def test_second_call_uses_cache_without_network(self):
         with tempfile.TemporaryDirectory() as directory:
             config = make_config(Path(directory))
-            with patch.dict(os.environ, {"FRED_API_KEY": "test-key"}):
-                with patch("local_console.macro.requests.get", side_effect=ok_side_effect) as getter:
-                    first = fetch_macro_background(config, NOW)
-                    second = fetch_macro_background(config, NOW)
+            with patch.dict(os.environ, {"FRED_API_KEY": "test-key"}), patch("local_console.macro.requests.get", side_effect=ok_side_effect) as getter:
+                first = fetch_macro_background(config, NOW)
+                second = fetch_macro_background(config, NOW)
 
         self.assertEqual(first, second)
         self.assertEqual(getter.call_count, len(MACRO_SERIES))
@@ -85,9 +82,8 @@ class MacroBackgroundTests(unittest.TestCase):
                 '{"status": "ok", "fetched_at": "2000-01-01T00:00:00+00:00", "series": {}}',
                 encoding="utf-8",
             )
-            with patch.dict(os.environ, {"FRED_API_KEY": "test-key"}):
-                with patch("local_console.macro.requests.get", side_effect=ok_side_effect) as getter:
-                    result = fetch_macro_background(config, NOW)
+            with patch.dict(os.environ, {"FRED_API_KEY": "test-key"}), patch("local_console.macro.requests.get", side_effect=ok_side_effect) as getter:
+                result = fetch_macro_background(config, NOW)
 
         self.assertEqual("ok", result["status"])
         self.assertEqual(getter.call_count, len(MACRO_SERIES))
@@ -95,12 +91,11 @@ class MacroBackgroundTests(unittest.TestCase):
     def test_all_series_failing_is_unavailable(self):
         with tempfile.TemporaryDirectory() as directory:
             config = make_config(Path(directory))
-            with patch.dict(os.environ, {"FRED_API_KEY": "test-key"}):
-                with patch(
-                    "local_console.macro.requests.get",
-                    side_effect=ConnectionError("network down"),
-                ):
-                    result = fetch_macro_background(config, NOW)
+            with patch.dict(os.environ, {"FRED_API_KEY": "test-key"}), patch(
+                "local_console.macro.requests.get",
+                side_effect=ConnectionError("network down"),
+            ):
+                result = fetch_macro_background(config, NOW)
 
         self.assertEqual("unavailable", result["status"])
         self.assertIn("FRED 请求失败", result["reason"])
@@ -116,9 +111,8 @@ class MacroBackgroundTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             config = make_config(Path(directory))
-            with patch.dict(os.environ, {"FRED_API_KEY": "test-key"}):
-                with patch("local_console.macro.requests.get", side_effect=flaky):
-                    result = fetch_macro_background(config, NOW)
+            with patch.dict(os.environ, {"FRED_API_KEY": "test-key"}), patch("local_console.macro.requests.get", side_effect=flaky):
+                result = fetch_macro_background(config, NOW)
 
         self.assertEqual("ok", result["status"])
         self.assertNotIn("DGS10", result["series"])

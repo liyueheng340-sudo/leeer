@@ -76,9 +76,8 @@ class RelevanceFilterTests(unittest.TestCase):
         ]
         with tempfile.TemporaryDirectory() as tmp:
             config = make_config(Path(tmp))
-            with patch.dict(sys.modules, {"yfinance": fake_yfinance_module(articles)}):
-                with patch.dict("os.environ", {"XAU_CONSOLE_NEWS_QUERIES": "gold"}):
-                    result = fetch_news_context(config, now=NOW)
+            with patch.dict(sys.modules, {"yfinance": fake_yfinance_module(articles)}), patch.dict("os.environ", {"XAU_CONSOLE_NEWS_QUERIES": "gold"}):
+                result = fetch_news_context(config, now=NOW)
 
         self.assertEqual("ok", result["status"])
         self.assertEqual(1, len(result["items"]))
@@ -88,9 +87,8 @@ class RelevanceFilterTests(unittest.TestCase):
         articles = [flat_article("Local cat wins marathon")]
         with tempfile.TemporaryDirectory() as tmp:
             config = make_config(Path(tmp))
-            with patch.dict(sys.modules, {"yfinance": fake_yfinance_module(articles)}):
-                with patch.dict("os.environ", {"XAU_CONSOLE_NEWS_QUERIES": "gold"}):
-                    result = fetch_news_context(config, now=NOW)
+            with patch.dict(sys.modules, {"yfinance": fake_yfinance_module(articles)}), patch.dict("os.environ", {"XAU_CONSOLE_NEWS_QUERIES": "gold"}):
+                result = fetch_news_context(config, now=NOW)
 
         self.assertEqual("ok", result["status"])
         self.assertEqual(0, len(result["items"]))
@@ -104,9 +102,8 @@ class FreshnessWindowTests(unittest.TestCase):
         ]
         with tempfile.TemporaryDirectory() as tmp:
             config = make_config(Path(tmp))
-            with patch.dict(sys.modules, {"yfinance": fake_yfinance_module(articles)}):
-                with patch.dict("os.environ", {"XAU_CONSOLE_NEWS_QUERIES": "gold"}):
-                    result = fetch_news_context(config, now=NOW)
+            with patch.dict(sys.modules, {"yfinance": fake_yfinance_module(articles)}), patch.dict("os.environ", {"XAU_CONSOLE_NEWS_QUERIES": "gold"}):
+                result = fetch_news_context(config, now=NOW)
 
         self.assertEqual(1, len(result["items"]))
         self.assertIn("rally", result["items"][0]["title"])
@@ -115,9 +112,8 @@ class FreshnessWindowTests(unittest.TestCase):
         articles = [{"title": "Gold no time", "publisher": "X", "summary": "", "link": ""}]
         with tempfile.TemporaryDirectory() as tmp:
             config = make_config(Path(tmp))
-            with patch.dict(sys.modules, {"yfinance": fake_yfinance_module(articles)}):
-                with patch.dict("os.environ", {"XAU_CONSOLE_NEWS_QUERIES": "gold"}):
-                    result = fetch_news_context(config, now=NOW)
+            with patch.dict(sys.modules, {"yfinance": fake_yfinance_module(articles)}), patch.dict("os.environ", {"XAU_CONSOLE_NEWS_QUERIES": "gold"}):
+                result = fetch_news_context(config, now=NOW)
 
         self.assertEqual(0, len(result["items"]))
 
@@ -158,9 +154,8 @@ class CacheTests(unittest.TestCase):
             config = make_config(Path(tmp))
             config.news_cache_path.parent.mkdir(parents=True, exist_ok=True)
             config.news_cache_path.write_text(json.dumps(cached_payload), encoding="utf-8")
-            with patch.dict(sys.modules, {"yfinance": fake_yfinance_module(fresh_articles)}):
-                with patch.dict("os.environ", {"XAU_CONSOLE_NEWS_QUERIES": "gold"}):
-                    result = fetch_news_context(config, now=NOW)
+            with patch.dict(sys.modules, {"yfinance": fake_yfinance_module(fresh_articles)}), patch.dict("os.environ", {"XAU_CONSOLE_NEWS_QUERIES": "gold"}):
+                result = fetch_news_context(config, now=NOW)
 
         self.assertEqual("Fresh gold update", result["items"][0]["title"])
 
@@ -174,9 +169,8 @@ class DeduplicationTests(unittest.TestCase):
         ]
         with tempfile.TemporaryDirectory() as tmp:
             config = make_config(Path(tmp))
-            with patch.dict(sys.modules, {"yfinance": fake_yfinance_module(articles)}):
-                with patch.dict("os.environ", {"XAU_CONSOLE_NEWS_QUERIES": "gold"}):
-                    result = fetch_news_context(config, now=NOW)
+            with patch.dict(sys.modules, {"yfinance": fake_yfinance_module(articles)}), patch.dict("os.environ", {"XAU_CONSOLE_NEWS_QUERIES": "gold"}):
+                result = fetch_news_context(config, now=NOW)
 
         titles = [item["title"] for item in result["items"]]
         self.assertEqual(2, len(titles))
@@ -188,9 +182,8 @@ class LimitTests(unittest.TestCase):
         articles = [flat_article(f"Gold news item {i}") for i in range(20)]
         with tempfile.TemporaryDirectory() as tmp:
             config = make_config(Path(tmp))
-            with patch.dict(sys.modules, {"yfinance": fake_yfinance_module(articles)}):
-                with patch.dict("os.environ", {"XAU_CONSOLE_NEWS_QUERIES": "gold"}):
-                    result = fetch_news_context(config, now=NOW)
+            with patch.dict(sys.modules, {"yfinance": fake_yfinance_module(articles)}), patch.dict("os.environ", {"XAU_CONSOLE_NEWS_QUERIES": "gold"}):
+                result = fetch_news_context(config, now=NOW)
 
         self.assertLessEqual(len(result["items"]), NEWS_LIMIT)
 
@@ -199,9 +192,8 @@ class SilentDegradationTests(unittest.TestCase):
     def test_yfinance_error_returns_unavailable(self):
         with tempfile.TemporaryDirectory() as tmp:
             config = make_config(Path(tmp))
-            with patch.dict(sys.modules, {"yfinance": raising_yfinance_module()}):
-                with patch.dict("os.environ", {"XAU_CONSOLE_NEWS_QUERIES": "gold"}):
-                    result = fetch_news_context(config, now=NOW)
+            with patch.dict(sys.modules, {"yfinance": raising_yfinance_module()}), patch.dict("os.environ", {"XAU_CONSOLE_NEWS_QUERIES": "gold"}):
+                result = fetch_news_context(config, now=NOW)
 
         self.assertEqual("unavailable", result["status"])
         self.assertIn("reason", result)
@@ -210,9 +202,8 @@ class SilentDegradationTests(unittest.TestCase):
         """yfinance 未安装时 ImportError 也应静默降级。"""
         with tempfile.TemporaryDirectory() as tmp:
             config = make_config(Path(tmp))
-            with patch.dict(sys.modules, {"yfinance": None}):
-                with patch.dict("os.environ", {"XAU_CONSOLE_NEWS_QUERIES": "gold"}):
-                    result = fetch_news_context(config, now=NOW)
+            with patch.dict(sys.modules, {"yfinance": None}), patch.dict("os.environ", {"XAU_CONSOLE_NEWS_QUERIES": "gold"}):
+                result = fetch_news_context(config, now=NOW)
 
         self.assertEqual("unavailable", result["status"])
 
@@ -222,9 +213,8 @@ class OutputStructureTests(unittest.TestCase):
         articles = [flat_article("Gold CPI data release")]
         with tempfile.TemporaryDirectory() as tmp:
             config = make_config(Path(tmp))
-            with patch.dict(sys.modules, {"yfinance": fake_yfinance_module(articles)}):
-                with patch.dict("os.environ", {"XAU_CONSOLE_NEWS_QUERIES": "gold"}):
-                    result = fetch_news_context(config, now=NOW)
+            with patch.dict(sys.modules, {"yfinance": fake_yfinance_module(articles)}), patch.dict("os.environ", {"XAU_CONSOLE_NEWS_QUERIES": "gold"}):
+                result = fetch_news_context(config, now=NOW)
 
         self.assertEqual("ok", result["status"])
         self.assertEqual("recent", result["frequency"])
@@ -246,9 +236,8 @@ class OutputStructureTests(unittest.TestCase):
         ]
         with tempfile.TemporaryDirectory() as tmp:
             config = make_config(Path(tmp))
-            with patch.dict(sys.modules, {"yfinance": fake_yfinance_module(articles)}):
-                with patch.dict("os.environ", {"XAU_CONSOLE_NEWS_QUERIES": "gold"}):
-                    result = fetch_news_context(config, now=NOW)
+            with patch.dict(sys.modules, {"yfinance": fake_yfinance_module(articles)}), patch.dict("os.environ", {"XAU_CONSOLE_NEWS_QUERIES": "gold"}):
+                result = fetch_news_context(config, now=NOW)
 
         times = [item["utc"] for item in result["items"]]
         self.assertEqual(times, sorted(times, reverse=True))
@@ -257,9 +246,8 @@ class OutputStructureTests(unittest.TestCase):
         articles = [flat_article("Gold cache write test")]
         with tempfile.TemporaryDirectory() as tmp:
             config = make_config(Path(tmp))
-            with patch.dict(sys.modules, {"yfinance": fake_yfinance_module(articles)}):
-                with patch.dict("os.environ", {"XAU_CONSOLE_NEWS_QUERIES": "gold"}):
-                    fetch_news_context(config, now=NOW)
+            with patch.dict(sys.modules, {"yfinance": fake_yfinance_module(articles)}), patch.dict("os.environ", {"XAU_CONSOLE_NEWS_QUERIES": "gold"}):
+                fetch_news_context(config, now=NOW)
 
             self.assertTrue(config.news_cache_path.exists())
             cached = json.loads(config.news_cache_path.read_text(encoding="utf-8"))
@@ -281,9 +269,8 @@ class NestedFormatTests(unittest.TestCase):
         }
         with tempfile.TemporaryDirectory() as tmp:
             config = make_config(Path(tmp))
-            with patch.dict(sys.modules, {"yfinance": fake_yfinance_module([nested])}):
-                with patch.dict("os.environ", {"XAU_CONSOLE_NEWS_QUERIES": "gold"}):
-                    result = fetch_news_context(config, now=NOW)
+            with patch.dict(sys.modules, {"yfinance": fake_yfinance_module([nested])}), patch.dict("os.environ", {"XAU_CONSOLE_NEWS_QUERIES": "gold"}):
+                result = fetch_news_context(config, now=NOW)
 
         self.assertEqual(1, len(result["items"]))
         self.assertEqual("Fed holds rates steady", result["items"][0]["title"])
@@ -302,11 +289,10 @@ class TimeoutProtectionTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             config = make_config(Path(tmp))
-            with patch("local_console.news._collect_articles", side_effect=hanging_collect):
-                with patch("local_console.news.NEWS_FETCH_TIMEOUT_SECONDS", 0.3):
-                    started = _time.monotonic()
-                    result = fetch_news_context(config, now=NOW)
-                    elapsed = _time.monotonic() - started
+            with patch("local_console.news._collect_articles", side_effect=hanging_collect), patch("local_console.news.NEWS_FETCH_TIMEOUT_SECONDS", 0.3):
+                started = _time.monotonic()
+                result = fetch_news_context(config, now=NOW)
+                elapsed = _time.monotonic() - started
 
         self.assertEqual("unavailable", result["status"])
         self.assertIn("超时", result["reason"])

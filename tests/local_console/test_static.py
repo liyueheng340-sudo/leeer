@@ -3,7 +3,6 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
-
 STATIC = Path(__file__).resolve().parents[2] / "local_console" / "static"
 
 
@@ -13,16 +12,16 @@ class StaticConsoleTests(unittest.TestCase):
 
         self.assertIn('id="start-brief"', page)
         self.assertIn('id="start-deep-review"', page)
-        self.assertIn('id="job-progress"', page)
+        self.assertIn('id="progress-stages"', page)
         self.assertIn('aria-live="polite"', page)
 
-    def test_dashboard_exposes_sensor_and_evidence_regions(self):
+    def test_dashboard_exposes_sensor_and_suggestion_regions(self):
         page = (STATIC / "index.html").read_text(encoding="utf-8")
 
         self.assertIn('id="tick-status"', page)
         self.assertIn('id="macro-status"', page)
         self.assertIn('id="macro-card"', page)
-        self.assertIn('id="layer-evidence"', page)
+        self.assertIn('id="layer-suggestions"', page)
         self.assertIn('id="decision-state"', page)
 
     def test_browser_polls_durable_job_state_instead_of_simulating_progress(self):
@@ -51,14 +50,16 @@ class StaticConsoleTests(unittest.TestCase):
         self.assertIn("terminalFailure ? STAGES.length - 1", script)
         self.assertIn("jobDisplayState(job)", script)
         self.assertIn('byId("decision-state").textContent = "失败"', script)
-        self.assertIn('["FAILED", "REJECTED"].includes(stage)', script)
+        self.assertIn("isTerminalFailure(stage)", script)
 
     def test_dashboard_hides_legacy_english_reports(self):
         script = (STATIC / "app.js").read_text(encoding="utf-8")
 
         self.assertIn("reportIsChinese", script)
         self.assertIn("历史报告不符合当前中文输出标准", script)
-        self.assertIn("事件上下文未核验", script)
+        # 军师模式：风险标注容器（gate.warnings / report.validation_warnings）已接入渲染
+        self.assertIn('byId("gate-warnings")', script)
+        self.assertIn('byId("validation-warnings")', script)
 
     def test_history_escapes_model_controlled_failure_details(self):
         script = (STATIC / "app.js").read_text(encoding="utf-8")
@@ -67,11 +68,12 @@ class StaticConsoleTests(unittest.TestCase):
         self.assertIn("${escapeHtml(detailText(job.detail))}", script)
         self.assertIn('escapeHtml(errorText(error, "无法读取历史任务', script)
 
-    def test_evidence_chips_and_macro_rows_are_escaped(self):
+    def test_suggestion_blocks_and_macro_rows_are_escaped(self):
         script = (STATIC / "app.js").read_text(encoding="utf-8")
 
         self.assertIn("renderSensors(gate)", script)
-        self.assertIn("${escapeHtml(field)}", script)
+        self.assertIn("suggestionBlockHtml", script)
+        self.assertIn("escapeHtml(String(item))", script)
         self.assertIn("escapeHtml(item.label || sid)", script)
 
     def test_poll_failure_backs_off_instead_of_giving_up(self):

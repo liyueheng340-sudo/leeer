@@ -8,8 +8,8 @@ from pathlib import Path
 from threading import Event
 from unittest.mock import patch
 
-from local_console.config import ConsoleConfig
 from local_console.brief import PROMPT_VERSION
+from local_console.config import ConsoleConfig
 from local_console.jobs import JobStore
 from local_console.service import ConsoleService
 
@@ -62,7 +62,7 @@ def fake_news_ok(_config: ConsoleConfig) -> dict[str, object]:
     }
 
 
-def fake_brief(_config: ConsoleConfig, _kind: str, _snapshot: dict[str, object], _gate: object) -> object:
+def fake_brief(_config: ConsoleConfig, _kind: str, _snapshot: dict[str, object], _gate: object, _mode: str = "scalp") -> object:
     return {
         "action": "ANALYSE",
         "source_ids": ["mt5_snapshot", "verified_event_context"],
@@ -75,7 +75,14 @@ def fake_brief(_config: ConsoleConfig, _kind: str, _snapshot: dict[str, object],
         "take_profit": "4015",
         "stop_loss": "3985",
         "risk_note": "测试环境风险提示。",
+        "suggestions": ["若回踩 3995-4005 不破可入场", "突破后关注量能确认"],
+        "scenarios": ["若跌破 3985 立即离场", "若冲高遇阻减仓一半"],
+        "avoid": ["不追突破", "不在数据窗口前重仓"],
     }
+
+
+def fake_iv_unavailable(_config: ConsoleConfig) -> dict[str, object]:
+    return {"status": "unavailable", "reason": "测试环境无 IV 数据源"}
 
 
 def make_service(config: ConsoleConfig, **overrides) -> ConsoleService:
@@ -83,6 +90,7 @@ def make_service(config: ConsoleConfig, **overrides) -> ConsoleService:
         "tick_runner": fake_tick_unavailable,
         "macro_runner": fake_macro_unavailable,
         "news_runner": fake_news_unavailable,
+        "iv_runner": fake_iv_unavailable,
         **overrides,
     }
     return ConsoleService(config, **kwargs)
@@ -100,10 +108,11 @@ class ConsoleServiceTests(unittest.TestCase):
                 kind: str,
                 snapshot: dict[str, object],
                 gate: object,
+                _mode: str = "scalp",
             ) -> object:
                 entered_model.set()
                 release_model.wait(1)
-                return fake_brief(brief_config, kind, snapshot, gate)
+                return fake_brief(brief_config, kind, snapshot, gate, _mode)
 
             service = make_service(
                 config,
@@ -286,9 +295,9 @@ class ConsoleServiceTests(unittest.TestCase):
                     },
                 }
 
-            def capturing_brief(_config: ConsoleConfig, kind: str, facts: dict[str, object], gate: object) -> object:
+            def capturing_brief(_config: ConsoleConfig, kind: str, facts: dict[str, object], gate: object, _mode: str = "scalp") -> object:
                 captured["facts"] = facts
-                return fake_brief(_config, kind, facts, gate)
+                return fake_brief(_config, kind, facts, gate, _mode)
 
             service = make_service(
                 config,
@@ -611,9 +620,9 @@ class AutoSchedulerTests(unittest.TestCase):
             config = make_config(Path(directory))
             captured: dict[str, object] = {}
 
-            def capturing_brief(_config: ConsoleConfig, kind: str, facts: dict[str, object], gate: object) -> object:
+            def capturing_brief(_config: ConsoleConfig, kind: str, facts: dict[str, object], gate: object, _mode: str = "scalp") -> object:
                 captured["facts"] = facts
-                return fake_brief(_config, kind, facts, gate)
+                return fake_brief(_config, kind, facts, gate, _mode)
 
             service = make_service(
                 config,
@@ -759,3 +768,69 @@ class AutoSchedulerTests(unittest.TestCase):
         self.assertLess(elapsed, 8.0, f"超时保护应快速降级，实际耗时 {elapsed:.1f}s")
         self.assertEqual("unavailable", current.gate["macro_status"])
         self.assertEqual("unavailable", current.gate["news_status"])
+
+class ModeSwitchingTests(unittest.TestCase):
+    """scalp/swing 双模式：前端切换 API + 每任务快照记录 mode。"""
+
+    def test_default_mode_is_scalp_and_status_exposes_it(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = make_config(Path(directory))
+            service = make_service(config)
+            try:
+                status = service.mode_status()
+            finally:
+                service.close()
+        self.assertEqual("scalp", status["mode"])
+
+    def test_set_mode_switches_and_persists_in_service(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = make_config(Path(directory))
+            service = make_service(config)
+            try:
+                status = service.set_mode("swing")
+                self.assertEqual("swing", status["mode"])
+                status2 = service.set_mode("scalp")
+                self.assertEqual("scalp", status2["mode"])
+            finally:
+                service.close()
+
+    def test_set_mode_rejects_invalid_value(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = make_config(Path(directory))
+            service = make_service(config)
+            try:
+                with self.assertRaises(ValueError):
+                    service.set_mode("grid")
+            finally:
+                service.close()
+
+    def test_job_records_selected_mode(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = make_config(Path(directory))
+            captured: dict[str, object] = {}
+
+            def capturing_brief(_config: ConsoleConfig, kind: str, facts: dict[str, object], gate: object, mode: str = "scalp") -> object:
+                captured["mode"] = mode
+                return fake_brief(_config, kind, facts, gate, mode)
+
+            service = make_service(
+                config,
+                snapshot_runner=fake_snapshot,
+                event_loader=lambda _path: {"status": "verified_clear"},
+                brief_runner=capturing_brief,
+            )
+            try:
+                service.set_mode("swing")
+                created = service.start("brief")
+                deadline = time.monotonic() + 2
+                current = service.get(created.id)
+                while current.stage not in {"COMPLETE", "REJECTED", "FAILED"} and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                    current = service.get(created.id)
+                record = service.get(created.id)
+            finally:
+                service.close()
+
+        self.assertEqual("COMPLETE", current.stage)
+        self.assertEqual("swing", record.mode)
+        self.assertEqual("swing", captured["mode"])

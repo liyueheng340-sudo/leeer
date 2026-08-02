@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import time
+from contextlib import suppress
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -18,6 +19,9 @@ _WRITE_MAX_ATTEMPTS = 6
 _WRITE_BACKOFF_SECONDS = 0.1
 
 JobKind = Literal["brief", "deep_review"]
+# 交易模式：scalp = 剥头皮（M1 入场，贴关键价位）；swing = 日内波段（M15 主图，1-6h 持仓）。
+# 每任务快照记录，复盘按模式分组统计，实证哪种模式在何种情境下有 edge。
+JobMode = Literal["scalp", "swing"]
 JobStage = Literal[
     "QUEUED",
     "SNAPSHOT",
@@ -52,10 +56,12 @@ class JobRecord:
     created_at: str
     updated_at: str
     detail: str
+    mode: JobMode = "scalp"
     snapshot: dict[str, object] | None = None
     gate: dict[str, object] | None = None
     report: dict[str, object] | None = None
     review: dict[str, object] | None = None
+    debate: dict[str, object] | None = None
     events: list[dict[str, str]] = field(default_factory=list)
 
     @property
@@ -76,14 +82,14 @@ class JobStore:
         self._transition_lock = RLock()
         # 启动即清理历史事故遗留的 .tmp 孤儿（replace 失败残留，永远不是有效记录）。
         for stray in self.root.glob("*.tmp"):
-            try:
+            with suppress(OSError):
                 stray.unlink()
-            except OSError:
-                pass
 
-    def create(self, kind: JobKind) -> JobRecord:
+    def create(self, kind: JobKind, mode: JobMode = "scalp") -> JobRecord:
         if kind not in {"brief", "deep_review"}:
             raise ValueError(f"unsupported job kind: {kind}")
+        if mode not in {"scalp", "swing"}:
+            raise ValueError(f"unsupported job mode: {mode}")
         now = utc_now()
         return self._write(
             JobRecord(
@@ -93,6 +99,7 @@ class JobStore:
                 now,
                 now,
                 "任务已创建",
+                mode=mode,
                 events=[{"stage": "QUEUED", "at": now, "detail": "任务已创建"}],
             )
         )
@@ -208,7 +215,7 @@ class JobStore:
             record.updated_at = utc_now()
             record.events.append({"stage": stage, "at": record.updated_at, "detail": detail})
             for key, value in updates.items():
-                if key not in {"snapshot", "gate", "report"}:
+                if key not in {"snapshot", "gate", "report", "debate"}:
                     raise ValueError(f"unsupported job update: {key}")
                 setattr(record, key, value)
             return self._write(record)
@@ -241,6 +248,6 @@ class JobStore:
                 path.write_text(payload, encoding="utf-8")
             except OSError:
                 if last_error is not None:
-                    raise last_error
+                    raise last_error from None
                 raise
             return record

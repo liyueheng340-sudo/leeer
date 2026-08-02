@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import importlib.util
-from unittest.mock import patch
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 def load_launcher():
@@ -43,9 +43,8 @@ class LauncherTests(unittest.TestCase):
     def test_launcher_refuses_environment_missing_llm_dependencies(self):
         launcher = load_launcher()
 
-        with patch.object(launcher.importlib.util, "find_spec", return_value=None):
-            with self.assertRaises(SystemExit) as ctx:
-                launcher.check_llm_dependencies()
+        with patch.object(launcher.importlib.util, "find_spec", return_value=None), self.assertRaises(SystemExit) as ctx:
+            launcher.check_llm_dependencies()
 
         self.assertEqual(1, ctx.exception.code)
 

@@ -15,6 +15,11 @@ from local_console.service import ConsoleService
 NOW = datetime(2026, 7, 31, 12, 0, 0, tzinfo=UTC)
 
 
+def has_warning(warnings: tuple[str, ...] | list[str], text: str) -> bool:
+    """warnings 是完整句子：断言需做子串匹配，而非成员匹配。"""
+    return any(text in w for w in warnings)
+
+
 def write_status(path: Path, payload: object) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
@@ -113,31 +118,28 @@ class ReadEaStatusTests(unittest.TestCase):
 
 
 class EaGateMappingTests(unittest.TestCase):
+    """1.5.0 军师模式：EA 风控态全部转为风险标注（str），不再返回降级级别。"""
+
     def test_unavailable_ea_status_does_not_change_gate(self):
         self.assertIsNone(ea_downgrade_reason({"available": False, "reason": "陈旧"}))
         self.assertIsNone(ea_downgrade_reason(None))
 
-    def test_paused_news_maps_to_wait(self):
+    def test_paused_news_maps_to_warning(self):
         result = ea_downgrade_reason({"available": True, "status": "PAUSED_NEWS"})
         self.assertIsNotNone(result)
-        level, reason = result
-        self.assertEqual("WAIT", level)
-        self.assertIn("新闻事件窗口", reason)
+        self.assertIn("新闻事件窗口", result)
 
-    def test_paused_volatility_maps_to_watch(self):
+    def test_paused_volatility_maps_to_warning(self):
         result = ea_downgrade_reason({"available": True, "status": "PAUSED_VOLATILITY"})
-        self.assertEqual("WATCH", result[0])
-        self.assertIn("波动率熔断", result[1])
+        self.assertIn("波动率熔断", result)
 
-    def test_regime_blocked_maps_to_watch(self):
+    def test_regime_blocked_maps_to_warning(self):
         result = ea_downgrade_reason({"available": True, "status": "RUNNING", "regime_blocked": True})
-        self.assertEqual("WATCH", result[0])
-        self.assertIn("强趋势", result[1])
+        self.assertIn("强趋势", result)
 
-    def test_hour_blocked_maps_to_watch(self):
+    def test_hour_blocked_maps_to_warning(self):
         result = ea_downgrade_reason({"available": True, "status": "RUNNING", "hour_blocked": True})
-        self.assertEqual("WATCH", result[0])
-        self.assertIn("高危波动窗口", result[1])
+        self.assertIn("高危波动窗口", result)
 
     def test_combined_watch_reasons_are_joined(self):
         result = ea_downgrade_reason(
@@ -148,16 +150,15 @@ class EaGateMappingTests(unittest.TestCase):
                 "hour_blocked": True,
             }
         )
-        self.assertEqual("WATCH", result[0])
-        self.assertIn("波动率熔断", result[1])
-        self.assertIn("强趋势", result[1])
-        self.assertIn("高危波动窗口", result[1])
+        self.assertIn("波动率熔断", result)
+        self.assertIn("强趋势", result)
+        self.assertIn("高危波动窗口", result)
 
     def test_running_status_means_no_downgrade(self):
         self.assertIsNone(ea_downgrade_reason({"available": True, "status": "RUNNING"}))
 
     def test_manual_and_schedule_pauses_are_not_market_evidence(self):
-        # 人工暂停/计划暂停是操作选择，不反映市场风险，不触发降级
+        # 人工暂停/计划暂停是操作选择，不反映市场风险，不触发标注
         self.assertIsNone(ea_downgrade_reason({"available": True, "status": "PAUSED_MANUAL"}))
         self.assertIsNone(ea_downgrade_reason({"available": True, "status": "PAUSED_SCHEDULE"}))
 
@@ -173,7 +174,9 @@ def fresh_snapshot() -> dict[str, object]:
 
 
 class EvaluateGateWithEaTests(unittest.TestCase):
-    def test_ea_news_window_forces_wait_when_calendar_unverified(self):
+    """1.5.0 军师模式：EA 新闻窗口与事件窗口都是标注，永不阻断模型。"""
+
+    def test_ea_news_window_stays_analyse_with_warning(self):
         result = evaluate_gate(
             fresh_snapshot(),
             {"status": "unverified"},
@@ -181,10 +184,12 @@ class EvaluateGateWithEaTests(unittest.TestCase):
             None,
             {"available": True, "status": "PAUSED_NEWS"},
         )
-        self.assertEqual("WAIT", result.action)
-        self.assertFalse(result.allow_model)
+        self.assertEqual("ANALYSE", result.action)
+        self.assertTrue(result.allow_model)
+        self.assertTrue(has_warning(result.warnings, "新闻事件窗口"))
+        self.assertTrue(has_warning(result.warnings, "事件上下文未核验"))
 
-    def test_event_wait_keeps_priority_over_ea_reason(self):
+    def test_event_wait_accumulates_both_warnings(self):
         result = evaluate_gate(
             fresh_snapshot(),
             {"status": "wait", "reason": "高影响事件窗口"},
@@ -192,10 +197,12 @@ class EvaluateGateWithEaTests(unittest.TestCase):
             None,
             {"available": True, "status": "PAUSED_NEWS"},
         )
-        self.assertEqual("WAIT", result.action)
-        self.assertEqual("高影响事件窗口", result.reason)
+        self.assertEqual("ANALYSE", result.action)
+        self.assertTrue(result.allow_model)
+        self.assertTrue(has_warning(result.warnings, "高影响事件窗口"))
+        self.assertTrue(has_warning(result.warnings, "新闻事件窗口"))
 
-    def test_ea_volatility_downgrades_analyse_to_watch(self):
+    def test_ea_volatility_stays_analyse_with_warning(self):
         result = evaluate_gate(
             fresh_snapshot(),
             {"status": "verified_clear"},
@@ -203,10 +210,10 @@ class EvaluateGateWithEaTests(unittest.TestCase):
             None,
             {"available": True, "status": "PAUSED_VOLATILITY"},
         )
-        self.assertEqual("WATCH", result.action)
+        self.assertEqual("ANALYSE", result.action)
         self.assertTrue(result.allow_model)
         self.assertTrue(result.directional_plan_allowed)
-        self.assertIn("波动率熔断", result.reason)
+        self.assertTrue(has_warning(result.warnings, "波动率熔断"))
 
     def test_unavailable_ea_status_keeps_analyse(self):
         result = evaluate_gate(
@@ -264,18 +271,34 @@ class ServiceEaWiringTests(unittest.TestCase):
             "tick_runner": lambda _c, _j: {"available": False, "reason": "测试环境无 MT5"},
             "macro_runner": lambda _c: {"status": "unavailable", "reason": "测试环境无 FRED"},
             "news_runner": lambda _c: {"status": "unavailable", "reason": "测试环境无网络"},
+            "iv_runner": lambda _c: {"status": "unavailable", "reason": "测试环境无 IV 数据源"},
             **overrides,
         }
         return ConsoleService(config, **kwargs)
 
-    def test_ea_news_window_completes_without_model_call(self):
+    def test_ea_news_window_runs_model_with_warning(self):
         with tempfile.TemporaryDirectory() as directory:
             config = make_config(Path(directory))
             model_called = []
 
-            def spy_brief(_c, _k, _facts, _gate) -> object:
+            def spy_brief(_c, _k, _facts, _gate, _mode="scalp") -> object:
                 model_called.append(True)
-                return {}
+                return {
+                    "action": "ANALYSE",
+                    "source_ids": ["mt5_snapshot", "verified_event_context"],
+                    "summary": "快照可用于人工分析。",
+                    "invalidation": "后续快照会替代本次观察。",
+                    "next_observation": "下一根 M1 收盘后刷新。",
+                    "evidence_fields": ["bid", "symbol"],
+                    "direction": "LONG",
+                    "entry_zone": "3995-4005",
+                    "take_profit": "4015",
+                    "stop_loss": "3985",
+                    "risk_note": "测试环境风险提示。",
+        "suggestions": ["若回踩 3995-4005 不破可入场", "突破后关注量能确认"],
+        "scenarios": ["若跌破 3985 立即离场", "若冲高遇阻减仓一半"],
+        "avoid": ["不追突破", "不在数据窗口前重仓"],
+                }
 
             service = self.make_service(
                 config,
@@ -298,9 +321,9 @@ class ServiceEaWiringTests(unittest.TestCase):
                 service.close()
 
         self.assertEqual("COMPLETE", current.stage)
-        self.assertFalse(model_called, "EA 新闻窗口下不得调用模型")
-        self.assertEqual("WAIT", current.gate["action"])
-        self.assertIn("新闻事件窗口", current.gate["reason"])
+        self.assertTrue(model_called, "军师模式：EA 新闻窗口下仍调用模型（风险标注不锁死）")
+        self.assertEqual("ANALYSE", current.gate["action"])
+        self.assertTrue(has_warning(current.gate["warnings"], "新闻事件窗口"))
         self.assertEqual("PAUSED_NEWS", current.gate["ea_status"]["status"])
         # 纪律：gate_payload 只带风险机制字段，不含持仓/盈亏
         self.assertNotIn("positions", current.gate["ea_status"])
@@ -310,7 +333,7 @@ class ServiceEaWiringTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             config = make_config(Path(directory))
 
-            def fake_brief(_c, _k, _facts, _gate) -> object:
+            def fake_brief(_c, _k, _facts, _gate, _mode="scalp") -> object:
                 return {
                     "action": "ANALYSE",
                     "source_ids": ["mt5_snapshot", "verified_event_context"],
@@ -323,6 +346,9 @@ class ServiceEaWiringTests(unittest.TestCase):
                     "take_profit": "4015",
                     "stop_loss": "3985",
                     "risk_note": "测试环境风险提示。",
+        "suggestions": ["若回踩 3995-4005 不破可入场", "突破后关注量能确认"],
+        "scenarios": ["若跌破 3985 立即离场", "若冲高遇阻减仓一半"],
+        "avoid": ["不追突破", "不在数据窗口前重仓"],
                 }
 
             service = self.make_service(

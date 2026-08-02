@@ -5,13 +5,13 @@ from __future__ import annotations
 import json
 import mimetypes
 import traceback
+from contextlib import suppress
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
 
 from .config import ConsoleConfig
-from .jobs import JobKind
 from .runlog import log_event
 from .service import ConsoleService
 
@@ -48,18 +48,14 @@ class ConsoleRequestHandler(BaseHTTPRequestHandler):
             self._internal_error()
 
     def _internal_error(self) -> None:
-        try:
+        with suppress(Exception):
             log_event(
                 self.server.config.runlog_path,
                 kind="http_error",
                 detail=traceback.format_exc()[-400:],
-            )
-        except Exception:
-            pass  # 日志失败不得级联
-        try:
-            self._json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "服务器内部错误，请重新发起"})
-        except Exception:
-            pass  # 连接已被对端关闭等极端情况：静默收尾
+            )  # 日志失败不得级联
+        with suppress(Exception):
+            self._json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "服务器内部错误，请重新发起"})  # 连接已被对端关闭等极端情况：静默收尾
 
     def _dispatch_get(self) -> None:
         path = urlparse(self.path).path
@@ -80,6 +76,9 @@ class ConsoleRequestHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/auto":
             self._json(HTTPStatus.OK, self.server.service.auto_status())
+            return
+        if path == "/api/mode":
+            self._json(HTTPStatus.OK, self.server.service.mode_status())
             return
         if path == "/api/review-stats":
             self._json(HTTPStatus.OK, self.server.service.review_stats())
@@ -104,6 +103,18 @@ class ConsoleRequestHandler(BaseHTTPRequestHandler):
 
     def _dispatch_post(self) -> None:
         path = urlparse(self.path).path
+        if path == "/api/mode":
+            try:
+                body = self._request_json()
+                mode = body.get("mode")
+                if mode not in {"scalp", "swing"}:
+                    raise ValueError("请求必须包含合法的 mode（scalp 或 swing）")
+                status = self.server.service.set_mode(str(mode))
+            except (ValueError, json.JSONDecodeError) as error:
+                self._json(HTTPStatus.BAD_REQUEST, {"error": str(error)})
+                return
+            self._json(HTTPStatus.OK, status)
+            return
         if path == "/api/auto":
             try:
                 body = self._request_json()

@@ -70,9 +70,8 @@ class CombinedCaptureTests(unittest.TestCase):
                 output = Path(command[command.index("--output") + 1])
                 output.write_text(json.dumps(CONTEXT_ROW) + "\n", encoding="utf-8")
 
-            with patch("local_console.snapshot.subprocess.run", side_effect=fake_run):
-                with self.assertRaises(SnapshotCaptureError):
-                    capture_combined(config, "job1")
+            with patch("local_console.snapshot.subprocess.run", side_effect=fake_run), self.assertRaises(SnapshotCaptureError):
+                capture_combined(config, "job1")
 
 
 if __name__ == "__main__":

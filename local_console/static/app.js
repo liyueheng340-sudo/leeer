@@ -21,7 +21,7 @@ const DIRECTION_ARROWS = { LONG: "↑", SHORT: "↓", NEUTRAL: "→" };
 const REVIEW_LABELS = { TP_FIRST: "止盈", SL_FIRST: "止损", NOT_TRIGGERED: "未触发", EXPIRED_UNRESOLVED: "未决", PENDING: "待复盘" };
 const REVIEW_CLASSES = { TP_FIRST: "rv-tp", SL_FIRST: "rv-sl", NOT_TRIGGERED: "rv-skip", EXPIRED_UNRESOLVED: "rv-expired", PENDING: "rv-pending" };
 /* 情境复盘的闸门动作中文映射（方向复用顶部 DIRECTION_LABELS） */
-const GATE_ACTION_LABELS = { ANALYSE: "已核验", WATCH: "技术参考", WAIT: "事件禁行", BLOCKED: "异常拦截" };
+const GATE_ACTION_LABELS = { ANALYSE: "分析", WATCH: "技术参考", WAIT: "事件禁行", BLOCKED: "异常拦截" };
 
 let pollingTimer = null;
 let pollFailures = 0;
@@ -29,7 +29,7 @@ let pollFailures = 0;
 const byId = (id) => document.getElementById(id);
 
 function classFor(state) { return `state-${String(state || "watch").toLowerCase()}`; }
-function actionLabel(action) { return ACTION_LABELS[action] || "观察"; }
+function actionLabel(action) { return ACTION_LABELS[action] || "分析"; }
 
 /* 历史/详情文本全部经过转义——模型与错误信息都是不可控输入 */
 function escapeHtml(value) {
@@ -43,13 +43,15 @@ function errorText(error, fallback) {
 /* 遗留英文报告不符合当前中文输出标准，历史列表中不展示其正文 */
 function reportIsChinese(text) { return typeof text === "string" && /[一-鿿]/.test(text); }
 /* 历史与进度共用的展示状态：失败任务看阶段，其余看闸门动作 */
+function isTerminalFailure(stage) { return stage === "FAILED" || stage === "REJECTED"; }
 function jobDisplayState(job) {
-  return job.stage === "FAILED" || job.stage === "REJECTED" ? job.stage : job.gate?.action || "WATCH";
+  return isTerminalFailure(job.stage) ? job.stage : job.gate?.action || "ANALYSE";
 }
 
+const TIME_FORMATTER = new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
 function formatTime(iso) {
   if (!iso) return "";
-  return new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }).format(new Date(iso));
+  return TIME_FORMATTER.format(new Date(iso));
 }
 
 function formatNumber(value) { return typeof value === "number" ? value.toFixed(2) : "—"; }
@@ -111,7 +113,7 @@ function setControlsBusy(isBusy) {
 
 /* ─── LAYERED REVEAL ─── */
 function resetReportLayers() {
-  ["layer-direction", "layer-evidence", "layer-summary", "layer-invalidation", "layer-next", "layer-risk"].forEach((id) => {
+  ["layer-direction", "layer-summary", "layer-suggestions", "layer-invalidation", "layer-next", "layer-risk"].forEach((id) => {
     const el = byId(id);
     el.hidden = true;
     el.classList.remove("reveal");
@@ -123,19 +125,21 @@ function revealLayer(id, delay) {
   if (el.hidden) {
     el.hidden = false;
     el.classList.add("reveal");
-    el.style.animationDelay = `${delay}ms`;
+    /* 用 transition-delay 制造分层错峰：transition 期间元素保持可见（opacity 1），
+       不会像 animation-delay+fill-mode 那样在延迟期隐藏内容 */
+    el.style.transitionDelay = `${delay}ms`;
   }
 }
 
 function revealAllLayers(report, stage) {
   const hasReport = report && report.summary;
-  const terminalFailure = ["FAILED", "REJECTED"].includes(stage);
+  const terminalFailure = isTerminalFailure(stage);
   if (hasReport || terminalFailure) revealLayer("layer-direction", 100);
-  if (report && Array.isArray(report.evidence_fields) && report.evidence_fields.length) revealLayer("layer-evidence", 250);
-  if (hasReport) revealLayer("layer-summary", 400);
-  if (hasReport) revealLayer("layer-invalidation", 550);
-  if (hasReport) revealLayer("layer-next", 700);
-  if (report && report.risk_note) revealLayer("layer-risk", 850);
+  if (hasReport) revealLayer("layer-summary", 250);
+  if (report && Array.isArray(report.suggestions) && report.suggestions.length) revealLayer("layer-suggestions", 350);
+  if (hasReport) revealLayer("layer-invalidation", 450);
+  if (hasReport) revealLayer("layer-next", 550);
+  if (report && report.risk_note) revealLayer("layer-risk", 650);
 }
 
 /* ─── RENDER FUNCTIONS ─── */
@@ -150,7 +154,7 @@ function renderJob(job) {
 }
 
 function renderProgress(job) {
-  const terminalFailure = ["FAILED", "REJECTED"].includes(job.stage);
+  const terminalFailure = isTerminalFailure(job.stage);
   const currentIndex = terminalFailure ? STAGES.length - 1 : STAGES.findIndex(([s]) => s === job.stage);
   const stages = terminalFailure
     ? [...STAGES.slice(0, -1), [job.stage, job.stage === "REJECTED" ? "报告被拒绝" : "任务失败"]]
@@ -175,12 +179,11 @@ function renderSnapshot(snapshot) {
   byId("snapshot-age").className = "chip chip-analyse";
   byId("source-status").textContent = snapshot.identity_match ? "MT5 已验证" : "身份不匹配";
 
-  const tf = snapshot.timeframe_structure || {};
-  byId("atr-m15").textContent = tf.m15?.atr_14 ? tf.m15.atr_14.toFixed(1) : (snapshot.atr_m15 ? snapshot.atr_m15.toFixed(1) : "—");
-  byId("atr-h1").textContent = tf.h1?.atr_14 ? tf.h1.atr_14.toFixed(1) : "—";
-  byId("atr-h4").textContent = tf.h4?.atr_14 ? tf.h4.atr_14.toFixed(1) : "—";
-
   const structure = snapshot.timeframe_structure || {};
+  byId("atr-m15").textContent = structure.m15?.atr_14 ? structure.m15.atr_14.toFixed(1) : (snapshot.atr_m15 ? snapshot.atr_m15.toFixed(1) : "—");
+  byId("atr-h1").textContent = structure.h1?.atr_14 ? structure.h1.atr_14.toFixed(1) : "—";
+  byId("atr-h4").textContent = structure.h4?.atr_14 ? structure.h4.atr_14.toFixed(1) : "—";
+
   byId("structure-grid").innerHTML = ["m1", "m5", "m15", "h1", "h4"].map((timeframe) => {
     const item = structure[timeframe] || snapshot.latest_closed_bars?.[timeframe];
     const direction = item?.body_direction || (item?.close > item?.open ? "buy" : item?.close < item?.open ? "sell" : undefined);
@@ -190,20 +193,29 @@ function renderSnapshot(snapshot) {
 }
 
 function renderGate(gate, stage) {
-  const terminalFailure = ["FAILED", "REJECTED"].includes(stage);
-  const action = terminalFailure ? stage : gate?.action || "WATCH";
-  const reason = gate?.reason || (terminalFailure ? "任务未完成" : "事件上下文未核验。系统只允许观察型简报。");
+  const terminalFailure = isTerminalFailure(stage);
+  const action = terminalFailure ? stage : gate?.action || "ANALYSE";
+  const reason = gate?.reason || (terminalFailure ? "任务未完成" : "等待首份快照。");
   const badge = byId("gate-badge");
   badge.textContent = actionLabel(action);
   badge.className = `chip chip-${action.toLowerCase()}`;
   byId("gate-reason").textContent = reason;
 
+  /* 军师模式：风险标注不阻断分析，随闸门呈现给交易者 */
+  const warnings = Array.isArray(gate?.warnings) ? gate.warnings : [];
+  const warningEl = byId("gate-warnings");
+  warningEl.innerHTML = warnings.map((w) => `<li class="gate-warning">${escapeHtml(String(w))}</li>`).join("");
+  warningEl.hidden = warnings.length === 0;
+
   const eventContext = gate?.event_context;
   const nextEvent = eventContext?.next_event;
+  const evStatus = eventContext?.status;
+  /* 军师模式：action 恒为 ANALYSE，事件核验状态由 event_context.status 如实呈现 */
   byId("event-status").textContent =
-    action === "ANALYSE" && nextEvent ? `已核验 · 下期 ${nextEvent.title}`
+    action === "ANALYSE" && evStatus === "wait" ? "事件窗口"
+    : action === "ANALYSE" && evStatus === "unverified" ? "未核验"
+    : action === "ANALYSE" && nextEvent ? `已核验 · 下期 ${nextEvent.title}`
     : action === "ANALYSE" ? "已核验"
-    : action === "WATCH" ? "未核验"
     : actionLabel(action);
 
   renderSensors(gate);
@@ -263,14 +275,45 @@ function renderSensors(gate) {
     newsEl.className = "mono";
     newsCard.hidden = true;
   }
+
+  /* IV 波动层：GLD 期权链推导的波动预期（ATM IV / 环境 / 偏斜 / Rank / 期限结构） */
+  renderIv(gate?.iv);
+}
+
+const IV_ENV_LABELS = { high: "高波动预期", low: "低波动预期", neutral: "中性" };
+function renderIv(iv) {
+  const ivEl = byId("iv-status");
+  const ivCard = byId("iv-card");
+  if (!iv || !iv.atm_iv) {
+    ivEl.textContent = "离线";
+    ivEl.className = "mono";
+    ivCard.hidden = true;
+    return;
+  }
+  const atm = (iv.atm_iv * 100).toFixed(1) + "%";
+  const env = IV_ENV_LABELS[iv.iv_vs_hv] || "中性";
+  ivEl.textContent = `ATM ${atm} · ${env}`;
+  ivEl.className = `mono ${iv.iv_vs_hv === "high" ? "online" : iv.iv_vs_hv === "low" ? "degraded" : ""}`;
+  ivCard.hidden = false;
+
+  byId("iv-atm").textContent = atm;
+  byId("iv-vs-hv").textContent = env;
+  byId("iv-skew").textContent = typeof iv.skew === "number"
+    ? `${iv.skew > 0 ? "+" : ""}${(iv.skew * 100).toFixed(1)}%${iv.skew > 0.005 ? "（下行偏斜）" : iv.skew < -0.005 ? "（上行偏斜）" : "（中性）"}`
+    : "—";
+  byId("iv-rank").textContent = typeof iv.iv_rank === "number" ? `${Math.round(iv.iv_rank * 100)}%` : "积累中";
+  byId("iv-term").textContent = typeof iv.term_slope === "number"
+    ? `${iv.term_slope > 0 ? "+" : ""}${(iv.term_slope * 100).toFixed(1)}%（远端${iv.term_slope > 0 ? "更高" : "更低"}）`
+    : "—";
+  byId("iv-expiry").textContent = iv.expiry ? iv.expiry.slice(0, 10) : "—";
 }
 
 function renderReport(job) {
   // 遗留英文报告不符合当前中文输出标准：主报告卡与历史区一致，不冒充合规报告展示
   const legacyReport = job.report && job.report.summary && !reportIsChinese(job.report.summary);
   const report = legacyReport ? null : job.report;
-  const terminalFailure = ["FAILED", "REJECTED"].includes(job.stage);
-  const action = terminalFailure ? job.stage : report?.action || job.gate?.action || "WATCH";
+  const terminalFailure = isTerminalFailure(job.stage);
+  const action = terminalFailure ? job.stage : report?.action || job.gate?.action || "ANALYSE";
 
   const badge = byId("decision-state");
   badge.textContent = actionLabel(action);
@@ -284,9 +327,8 @@ function renderReport(job) {
     const arrow = byId("direction-arrow");
     arrow.textContent = DIRECTION_ARROWS[dir] || "→";
     arrow.className = `direction-arrow ${dir.toLowerCase()}`;
-    const isWatchMode = action === "WATCH";
     const dirLabel = DIRECTION_LABELS[dir] || "观望";
-    byId("direction-label").textContent = isWatchMode && dir !== "NEUTRAL" ? `${dirLabel}（技术面参考）` : dirLabel;
+    byId("direction-label").textContent = dirLabel;
     byId("direction-note").textContent = report.summary ? report.summary.slice(0, 80) + (report.summary.length > 80 ? "…" : "") : "";
 
     if (report.entry_zone || report.take_profit || report.stop_loss) {
@@ -311,13 +353,6 @@ function renderReport(job) {
     byId("trade-levels").hidden = true;
   }
 
-  // 证据链
-  if (report && Array.isArray(report.evidence_fields)) {
-    byId("evidence-row").innerHTML = report.evidence_fields
-      .map((field) => `<span class="evidence-chip">${escapeHtml(field)}</span>`)
-      .join("");
-  }
-
   if (report && report.summary) {
     byId("report-summary").textContent = report.summary;
   } else if (legacyReport) {
@@ -328,6 +363,26 @@ function renderReport(job) {
   if (report && report.invalidation) byId("report-invalidation").textContent = report.invalidation;
   if (report && report.next_observation) byId("report-next").textContent = report.next_observation;
   if (report && report.risk_note) byId("risk-note").textContent = `⚠ ${report.risk_note}`;
+  /* 可执行建议：关键位置 / 预案 / 应避免（模型输出，全部转义） */
+  if (report && Array.isArray(report.suggestions)) {
+    const box = byId("suggestions-box");
+    const blocks = [];
+    if (Array.isArray(report.suggestions) && report.suggestions.length) {
+      blocks.push(suggestionBlockHtml("操作建议", report.suggestions, "sg-action"));
+    }
+    if (Array.isArray(report.scenarios) && report.scenarios.length) {
+      blocks.push(suggestionBlockHtml("预案（如果……就……）", report.scenarios, "sg-scenario"));
+    }
+    if (Array.isArray(report.avoid) && report.avoid.length) {
+      blocks.push(suggestionBlockHtml("应避免", report.avoid, "sg-avoid"));
+    }
+    box.innerHTML = blocks.join("");
+  }
+  /* 军师模式：验收时的方向/点位纪律标注（共振相悖、震荡市强方向等），不阻断但如实呈现 */
+  const vwarnings = Array.isArray(report?.validation_warnings) ? report.validation_warnings : [];
+  const vwEl = byId("validation-warnings");
+  vwEl.innerHTML = vwarnings.map((w) => `<li class="gate-warning">${escapeHtml(String(w))}</li>`).join("");
+  vwEl.hidden = vwarnings.length === 0;
 
   if (TERMINAL.has(job.stage)) {
     revealAllLayers(report, job.stage);
@@ -351,7 +406,15 @@ function renderFailure(message) {
   byId("direction-label").textContent = "分析失败";
 }
 
+/* 可执行建议渲染：三组（操作/预案/应避免），全部转义防注入 */
+function suggestionBlockHtml(title, items, cls) {
+  const lis = items.map((item) => `<li class="${cls}">${escapeHtml(String(item))}</li>`).join("");
+  return `<div class="sg-block"><span class="sg-title">${title}</span><ul class="sg-list">${lis}</ul></div>`;
+}
+
 /* ─── STATUS & HISTORY ─── */
+/* 自检灯配色：MT5=RX-78 蓝 / FRED=黄 / CAL=红（机甲三原色点缀） */
+const LAMP_TONES = { "lamp-mt5": "tone-blue", "lamp-fred": "tone-yellow", "lamp-cal": "tone-red" };
 function renderSelfCheck(selfCheck) {
   const lamps = { "lamp-mt5": selfCheck?.mt5, "lamp-fred": selfCheck?.fred, "lamp-cal": selfCheck?.calendar };
   Object.entries(lamps).forEach(([id, state]) => {
@@ -359,7 +422,8 @@ function renderSelfCheck(selfCheck) {
     if (!el) return;
     const good = state === "ok" || state === "configured" || state === "fresh";
     const bad = state === "offline" || state === "missing_key";
-    el.className = `lamp ${good ? "ok" : bad ? "bad" : state ? "warn" : ""}`;
+    const tone = LAMP_TONES[id] || "";
+    el.className = `lamp ${good ? "ok" : bad ? "bad" : state ? "warn" : ""} ${tone}`;
     el.title = `${el.textContent} 自检：${state || "未知"}`;
   });
 }
@@ -374,9 +438,19 @@ async function refreshStatus() {
       renderJob(status.latest_job);
       if (!TERMINAL.has(status.latest_job.stage)) pollJob(status.latest_job.id);
     }
+    refreshMode();
   } catch (error) {
     byId("system-time").textContent = "服务异常";
     renderFailure(error?.message || "无法连接本机分析服务。");
+  }
+}
+
+async function refreshMode() {
+  try {
+    const status = await jsonRequest("/api/mode");
+    renderMode(status.mode);
+  } catch (error) {
+    /* mode 读取失败不阻断主界面 */
   }
 }
 
@@ -415,6 +489,7 @@ function renderContextStats(contexts) {
     contextBlockHtml("按闸门", contexts.by_gate_action, GATE_ACTION_LABELS),
     contextBlockHtml("按共振", contexts.by_resonance),
     contextBlockHtml("按方向", contexts.by_direction, DIRECTION_LABELS),
+    contextBlockHtml("按模式", contexts.by_mode, MODE_LABELS),
   ].join("");
   el.innerHTML = html || '<p class="empty-state">情境样本积累中。</p>';
 }
@@ -466,6 +541,42 @@ async function toggleAuto() {
   }
 }
 
+/* ─── 交易模式切换：scalp（剥头皮）/ swing（日内波段），随任务快照记录 ─── */
+const MODE_LABELS = { scalp: "剥头皮", swing: "日内波段" };
+function renderMode(mode) {
+  const state = byId("mode-state");
+  if (!state) return;
+  const current = mode || "scalp";
+  state.textContent = MODE_LABELS[current] || "剥头皮";
+  /* 小灯式：点哪个哪个亮（active class 驱动金色小灯） */
+  document.querySelectorAll(".mode-pill").forEach((pill) => {
+    const isActive = pill.dataset.mode === current;
+    pill.classList.toggle("active", isActive);
+    pill.title = `${MODE_LABELS[pill.dataset.mode] || pill.dataset.mode}${isActive ? "（当前模式）" : ""}`;
+  });
+}
+
+async function setMode(mode) {
+  if (mode !== "scalp" && mode !== "swing") return;
+  try {
+    const status = await jsonRequest("/api/mode", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode }),
+    });
+    renderMode(status.mode);
+  } catch (error) {
+    byId("mode-state").textContent = "异常";
+  }
+}
+
+/* mode-pill 直接绑定：点哪个就选哪个（类似自主调度的小灯交互） */
+function bindModePills() {
+  document.querySelectorAll(".mode-pill").forEach((pill) => {
+    pill.addEventListener("click", () => setMode(pill.dataset.mode));
+  });
+}
+
 /* 结论签名：闸门动作 + 方向 + 共振标签；连续同签名的历史任务降透明度 */
 function conclusionSignature(job) {
   if (!job || job.stage !== "COMPLETE" || !job.report || !job.gate) return null;
@@ -511,8 +622,103 @@ async function refreshHistory() {
 function tickClock() {
   const el = byId("system-time");
   if (el.textContent !== "服务异常") {
-    el.textContent = new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }).format(new Date());
+    el.textContent = TIME_FORMATTER.format(new Date());
   }
+}
+
+/* ─── 视图导航：决策台 / 市场背景 / 复盘记录 / 深度复盘 ─── */
+function switchView(view) {
+  document.body.dataset.view = view;
+  document.querySelectorAll(".nav-btn").forEach((btn) => {
+    btn.classList.toggle("active", btn.dataset.view === view);
+  });
+  /* 切换视图后立即刷新目标视图的数据 */
+  if (view === "review") {
+    refreshHistory();
+    refreshReviewStats();
+  }
+  if (view === "debate") {
+    refreshDebate();
+  }
+}
+
+/* ─── 深度复盘：三家模型辩论过程展示 ─── */
+const DEBATE_ROLE_META = {
+  "技术面主攻": { icon: "◈", color: "qwen" },
+  "宏观情绪主攻": { icon: "◉", color: "deepseek" },
+  "风险对抗": { icon: "⚠", color: "glm" },
+};
+
+async function refreshDebate() {
+  const container = byId("debate-latest");
+  if (!container) return;
+  try {
+    const history = await jsonRequest("/api/history");
+    const debates = (history.jobs || []).filter((j) => j.kind === "deep_review" && j.debate);
+    if (!debates.length) {
+      container.innerHTML = '<p class="empty-state">尚无辩论记录。点击「发起辩论复盘」。</p>';
+      return;
+    }
+    const latest = debates[0];
+    container.innerHTML = renderDebate(latest);
+  } catch (error) {
+    container.innerHTML = `<p class="empty-state">${escapeHtml(errorText(error, "无法读取辩论记录。"))}</p>`;
+  }
+}
+
+function renderDebate(job) {
+  const debate = job.debate || {};
+  const rounds = Array.isArray(debate.rounds) ? debate.rounds : [];
+  const consensus = debate.consensus || {};
+  const parts = [];
+
+  // 共识结论卡（置顶）
+  const report = consensus.report;
+  const votes = report?.debate_votes || consensus.votes || {};
+  const votesHtml = Object.entries(votes).map(([k, v]) => `<span class="vote-chip">${k} ${v}</span>`).join("");
+  const direction = consensus.direction || report?.direction || "—";
+  const dirArrow = direction === "LONG" ? "↑" : direction === "SHORT" ? "↓" : "→";
+  parts.push(`<article class="debate-consensus">
+    <div class="side-card-head">
+      <span class="side-label">辩论共识${votesHtml ? " " + votesHtml : ""}</span>
+      <span class="chip chip-analyse">${job.stage}</span>
+    </div>
+    <div class="debate-dir"><span class="direction-arrow ${direction === "LONG" ? "long" : direction === "SHORT" ? "short" : "neutral"}">${dirArrow}</span>
+      <div><strong>${direction || "—"}</strong><span class="mono">有效报告 ${consensus.valid_count ?? "—"} 家</span></div></div>
+    ${report?.entry_zone ? `<div class="trade-levels">
+      <div class="level-item level-entry"><span>入场</span><strong class="mono">${escapeHtml(report.entry_zone)}</strong></div>
+      <div class="level-item level-tp"><span>止盈</span><strong class="mono">${escapeHtml(report.take_profit || "—")}</strong></div>
+      <div class="level-item level-sl"><span>止损</span><strong class="mono">${escapeHtml(report.stop_loss || "—")}</strong></div>
+    </div>` : ""}
+    ${report?.summary ? `<p class="report-body">${escapeHtml(report.summary)}</p>` : ""}
+    ${Array.isArray(report?.debate_disagreements) && report.debate_disagreements.length
+      ? `<div class="debate-disagree"><span class="sg-title">分歧点</span><ul class="sg-list">${report.debate_disagreements.map((d) => `<li class="sg-scenario">${escapeHtml(d.model || d.note || "—")}</li>`).join("")}</ul></div>` : ""}
+  </article>`);
+
+  // 每轮辩论
+  rounds.forEach((round) => {
+    const stmts = Array.isArray(round.statements) ? round.statements : [];
+    parts.push(`<article class="debate-round">
+      <div class="side-card-head"><span class="side-label">第 ${round.round} 轮 · ${round.round === 1 ? "独立分析" : round.round === 2 ? "交叉辩论" : "分歧收敛"}</span></div>
+      <div class="debate-stmts">${stmts.map(renderStatement).join("")}</div>
+    </article>`);
+  });
+  return parts.join("");
+}
+
+function renderStatement(stmt) {
+  const meta = DEBATE_ROLE_META[stmt.role] || { icon: "◈", color: "" };
+  const body = stmt.error
+    ? `<p class="sg-avoid">${escapeHtml(stmt.error)}</p>`
+    : `<p class="debate-text">${escapeHtml(stmt.content || "（无输出）")}</p>`;
+  return `<div class="debate-stmt ${meta.color}">
+    <div class="debate-stmt-head"><span class="debate-ico">${meta.icon}</span>
+      <strong>${escapeHtml(stmt.role || stmt.model)}</strong>
+      <span class="mono chip ${stmt.ok ? "chip-analyse" : "chip-muted"}">${stmt.ok ? "有效" : "失败"}</span>
+      <span class="mono debate-model">${escapeHtml(stmt.model)}</span>
+    </div>
+    ${body}
+  </div>`;
 }
 
 /* ─── BOOT ─── */
@@ -523,7 +729,13 @@ async function boot() {
   await refreshReviewStats();
 }
 
+document.querySelectorAll(".nav-btn").forEach((btn) => {
+  btn.addEventListener("click", () => switchView(btn.dataset.view));
+});
 byId("start-brief").addEventListener("click", () => startJob("brief"));
 byId("start-deep-review").addEventListener("click", () => startJob("deep_review"));
+const debateRun = byId("debate-run");
+if (debateRun) debateRun.addEventListener("click", () => startJob("deep_review"));
 byId("auto-toggle").addEventListener("click", toggleAuto);
+bindModePills();
 boot();

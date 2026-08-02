@@ -7,13 +7,14 @@
     <title>XAU 分析控制台</title>
     <link rel="stylesheet" href="/static/app.css">
   </head>
-  <body>
+  <body data-view="decision">
+    <!-- ═══ 顶栏：RX-78 装甲带 ═══ -->
     <header class="topbar">
       <a class="brand" href="/" aria-label="XAU Analysis Console 首页">
         <span class="brand-mark" aria-hidden="true">Au</span>
         <span class="brand-text">
           <strong>XAU 分析控制台</strong>
-          <small>READ-ONLY · 先验证后分析</small>
+          <small>E.F.S.F. · ANALYSIS CONSOLE · READ-ONLY</small>
         </span>
       </a>
       <div class="topbar-status">
@@ -22,119 +23,267 @@
           <span class="lamp" id="lamp-fred" title="FRED 密钥自检"><i></i>FRED</span>
           <span class="lamp" id="lamp-cal" title="事件日历自检"><i></i>CAL</span>
         </span>
+        <div class="mode-lamps" id="mode-toggle" role="group" aria-label="交易模式切换" title="交易模式：剥头皮（M1 贴关键价位）或日内波段（M15 主图，1-6h 持仓）">
+          <button class="mode-pill" data-mode="scalp" type="button"><i class="dot"></i>剥头皮</button>
+          <button class="mode-pill" data-mode="swing" type="button"><i class="dot"></i>日内波段</button>
+          <span id="mode-state" class="mono" hidden>scalp</span>
+        </div>
         <button id="auto-toggle" class="auto-toggle" type="button" title="自主调度：按节奏自动采样，结论变化时才醒目">
           <i class="dot"></i>自主调度 <span id="auto-state" class="mono">关</span>
         </button>
         <span id="system-time" class="mono">--:--:--</span>
       </div>
       <div class="topbar-actions">
-        <button id="start-brief" class="btn btn-primary" type="button">刷新 MT5 并生成简报</button>
+        <button id="start-brief" class="btn btn-primary" type="button">生成简报</button>
         <button id="start-deep-review" class="btn btn-ghost" type="button">深度复盘<span class="btn-note">QWEN 3.8</span></button>
       </div>
     </header>
 
-    <!-- 通栏报价带：报价 + 多周期结构 + ATR，一次扫视读完市场状态 -->
-    <section class="ticker-bar" aria-label="市场快照">
-      <div class="ticker-quote">
-        <div class="tq-head">
-          <span class="tq-symbol">XAUUSD</span>
-          <span id="snapshot-age" class="chip chip-muted">无快照</span>
-        </div>
-        <div class="tq-prices">
-          <div class="tq-price">
-            <span class="tq-tag">BID</span>
-            <strong id="bid" class="mono">—</strong>
-          </div>
-          <div class="tq-price">
-            <span class="tq-tag">ASK</span>
-            <strong id="ask" class="mono">—</strong>
-          </div>
-          <div class="tq-price tq-spread">
-            <span class="tq-tag">点差</span>
-            <strong id="spread" class="mono">—</strong>
-          </div>
-        </div>
-        <div class="tq-foot mono">快照时间 <span id="snapshot-time">尚未读取</span></div>
-      </div>
+    <div class="cockpit">
+      <!-- ═══ 左侧：机械导航栏 ═══ -->
+      <nav class="mech-nav" aria-label="视图导航">
+        <button class="nav-btn active" data-view="decision" type="button">
+          <i class="nav-ico">◈</i><span>决策台</span>
+        </button>
+        <button class="nav-btn" data-view="background" type="button">
+          <i class="nav-ico">◉</i><span>市场背景</span>
+        </button>
+        <button class="nav-btn" data-view="review" type="button">
+          <i class="nav-ico">▤</i><span>复盘记录</span>
+        </button>
+        <button class="nav-btn" data-view="debate" type="button">
+          <i class="nav-ico">⚔</i><span>深度复盘</span>
+        </button>
+        <span class="nav-deco" aria-hidden="true"></span>
+      </nav>
 
-      <div class="ticker-structure">
-        <div class="tb-title">多周期结构<small>已收 K 线 · 偏强/偏弱</small></div>
-        <div id="structure-grid" class="structure-list">
-          <div class="structure-row"><span>M1</span><strong>等待快照</strong><i></i></div>
-          <div class="structure-row"><span>M5</span><strong>等待快照</strong><i></i></div>
-          <div class="structure-row"><span>M15</span><strong>等待快照</strong><i></i></div>
-          <div class="structure-row"><span>H1</span><strong>等待快照</strong><i></i></div>
-          <div class="structure-row"><span>H4</span><strong>等待快照</strong><i></i></div>
-        </div>
-      </div>
-
-      <div class="ticker-atr">
-        <div class="tb-title">波动率 ATR</div>
-        <div class="atr-grid">
-          <div><span>M15</span><strong id="atr-m15" class="mono">—</strong></div>
-          <div><span>H1</span><strong id="atr-h1" class="mono">—</strong></div>
-          <div><span>H4</span><strong id="atr-h4" class="mono">—</strong></div>
-        </div>
-      </div>
-    </section>
-
-    <main class="main-layout">
-      <!-- 主栏：报告 + 历史 -->
-      <div class="col-main">
-        <section class="stage-center" aria-live="polite">
-          <article id="report-card" class="report-card">
-            <div class="report-layer layer-status" id="layer-status">
-              <div class="status-badge-row">
-                <span id="decision-state" class="action-badge action-watch">观察</span>
-                <span id="report-kind" class="kind-tag">等待分析</span>
-                <span id="report-time" class="mono report-time"></span>
+      <!-- ═══ 视图 1：决策台（报价带 + 中央全息主屏 + 右侧交易面板） ═══ -->
+      <div class="view view-decision">
+        <!-- 全息报价带 -->
+        <section class="holo-bar" aria-label="市场快照">
+          <div class="holo-quote">
+            <div class="tq-head">
+              <span class="tq-symbol">XAUUSD</span>
+              <span id="snapshot-age" class="chip chip-muted">无快照</span>
+            </div>
+            <div class="tq-prices">
+              <div class="tq-price">
+                <span class="tq-tag">BID</span>
+                <strong id="bid" class="mono holo-num">—</strong>
+              </div>
+              <div class="tq-price">
+                <span class="tq-tag">ASK</span>
+                <strong id="ask" class="mono holo-num">—</strong>
+              </div>
+              <div class="tq-price tq-spread">
+                <span class="tq-tag">点差</span>
+                <strong id="spread" class="mono holo-num">—</strong>
               </div>
             </div>
+            <div class="tq-foot mono">快照时间 <span id="snapshot-time">尚未读取</span></div>
+          </div>
 
-            <div class="report-layer layer-direction" id="layer-direction" hidden>
-              <div class="direction-hero">
-                <span id="direction-arrow" class="direction-arrow">—</span>
-                <div class="direction-text">
-                  <strong id="direction-label">等待分析结果</strong>
-                  <span id="direction-note" class="direction-note"></span>
+          <div class="holo-structure">
+            <div class="tb-title">多周期结构<small>已收 K 线 · 偏强/偏弱</small></div>
+            <div id="structure-grid" class="structure-list">
+              <div class="structure-row"><span>M1</span><strong>等待快照</strong><i></i></div>
+              <div class="structure-row"><span>M5</span><strong>等待快照</strong><i></i></div>
+              <div class="structure-row"><span>M15</span><strong>等待快照</strong><i></i></div>
+              <div class="structure-row"><span>H1</span><strong>等待快照</strong><i></i></div>
+              <div class="structure-row"><span>H4</span><strong>等待快照</strong><i></i></div>
+            </div>
+          </div>
+
+          <div class="holo-atr">
+            <div class="tb-title">波动率 ATR</div>
+            <div class="atr-grid">
+              <div><span>M15</span><strong id="atr-m15" class="mono">—</strong></div>
+              <div><span>H1</span><strong id="atr-h1" class="mono">—</strong></div>
+              <div><span>H4</span><strong id="atr-h4" class="mono">—</strong></div>
+            </div>
+          </div>
+        </section>
+
+        <!-- 中央：全息决策主屏 -->
+        <main class="main-layout">
+          <div class="col-main">
+            <section class="stage-center" aria-live="polite">
+              <article id="report-card" class="report-card">
+                <div class="report-layer layer-status" id="layer-status">
+                  <div class="status-badge-row">
+                    <span id="decision-state" class="action-badge action-analyse">分析</span>
+                    <span id="report-kind" class="kind-tag">等待分析</span>
+                    <span class="armor-tag" aria-hidden="true"><i></i><i></i><i></i></span>
+                    <span id="report-time" class="mono report-time"></span>
+                  </div>
+                </div>
+
+                <div class="report-layer layer-direction" id="layer-direction" hidden>
+                  <div class="direction-hero">
+                    <span id="direction-arrow" class="direction-arrow">—</span>
+                    <div class="direction-text">
+                      <strong id="direction-label">等待分析结果</strong>
+                      <span id="direction-note" class="direction-note"></span>
+                    </div>
+                  </div>
+                  <div id="trade-levels" class="trade-levels" hidden>
+                    <div class="level-item level-entry">
+                      <span>入场区间</span><strong id="entry-zone" class="mono">—</strong>
+                    </div>
+                    <div class="level-item level-tp">
+                      <span>止盈 TP</span><strong id="take-profit" class="mono">—</strong>
+                    </div>
+                    <div class="level-item level-sl">
+                      <span>止损 SL</span><strong id="stop-loss" class="mono">—</strong>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="report-layer layer-summary" id="layer-summary" hidden>
+                  <h3 class="layer-title">分析依据</h3>
+                  <p id="report-summary" class="report-body">点击「生成简报」开始。系统会先取新的 MT5 快照，经事实闸门校验后再允许模型分析。</p>
+                </div>
+
+                <div class="report-layer layer-suggestions" id="layer-suggestions" hidden>
+                  <h3 class="layer-title">操作建议 <small>关键位置 · 预案 · 应避免</small></h3>
+                  <div id="suggestions-box" class="suggestions-box"></div>
+                </div>
+
+                <div class="report-layer layer-invalidation" id="layer-invalidation" hidden>
+                  <h3 class="layer-title">失效条件</h3>
+                  <p id="report-invalidation" class="report-body report-body-muted">数据过期、身份不匹配或事件状态变化时失效。</p>
+                </div>
+
+                <div class="report-layer layer-next" id="layer-next" hidden>
+                  <h3 class="layer-title">下一观察</h3>
+                  <p id="report-next" class="report-body report-body-muted">获取第一份新快照。</p>
+                </div>
+
+                <div class="report-layer layer-risk" id="layer-risk" hidden>
+                  <p id="risk-note" class="risk-note"></p>
+                  <ul id="validation-warnings" class="warning-list" hidden></ul>
+                </div>
+              </article>
+            </section>
+          </div>
+
+          <!-- 右侧：任务进度 + 闸门/传感器 + IV -->
+          <aside class="col-side">
+            <article class="side-card" id="job-progress">
+              <div class="side-card-head">
+                <span class="side-label">任务进度</span>
+                <span id="job-elapsed" class="mono chip chip-muted">尚未开始</span>
+              </div>
+              <div id="progress-stages" class="progress-track">
+                <div class="progress-node"><i></i><span>等待任务</span></div>
+              </div>
+              <p id="job-detail" class="progress-detail">刷新页面后进度仍然存在。</p>
+            </article>
+
+            <article class="side-card gate-card">
+              <div class="side-card-head">
+                <span class="side-label">事实闸门</span>
+                <span id="gate-badge" class="chip chip-analyse">分析</span>
+              </div>
+              <p id="gate-reason" class="gate-reason">等待首份快照。</p>
+              <ul id="gate-warnings" class="warning-list" hidden></ul>
+              <div class="sensor-grid">
+                <div class="sensor-row">
+                  <span class="sensor-label">TICK 传感器</span>
+                  <strong id="tick-status" class="mono">离线</strong>
+                </div>
+                <div class="sensor-row">
+                  <span class="sensor-label">宏观背景</span>
+                  <strong id="macro-status" class="mono">离线</strong>
+                </div>
+                <div class="sensor-row">
+                  <span class="sensor-label">新闻背景</span>
+                  <strong id="news-status" class="mono">离线</strong>
+                </div>
+                <div class="sensor-row">
+                  <span class="sensor-label">波动率 IV</span>
+                  <strong id="iv-status" class="mono">离线</strong>
                 </div>
               </div>
-              <div id="trade-levels" class="trade-levels" hidden>
-                <div class="level-item level-entry">
-                  <span>入场区间</span><strong id="entry-zone" class="mono">—</strong>
+              <div class="sys-grid">
+                <div><span>数据源</span><strong id="source-status">等待 MT5</strong></div>
+                <div><span>事件</span><strong id="event-status">未核验</strong></div>
+                <div><span>模型</span><strong id="model-status">检查中</strong></div>
+              </div>
+              <div class="gate-rule"><span>规则</span><strong>数据保真，永不锁死</strong></div>
+            </article>
+
+            <article class="side-card" id="iv-card" hidden>
+              <div class="side-card-head">
+                <span class="side-label">波动率分析（IV 维度）</span>
+                <span class="chip chip-muted">GLD 期权链</span>
+              </div>
+              <div class="iv-hero">
+                <div class="iv-atm-block">
+                  <span>ATM IV</span>
+                  <strong id="iv-atm" class="mono holo-num">—</strong>
                 </div>
-                <div class="level-item level-tp">
-                  <span>止盈 TP</span><strong id="take-profit" class="mono">—</strong>
-                </div>
-                <div class="level-item level-sl">
-                  <span>止损 SL</span><strong id="stop-loss" class="mono">—</strong>
-                </div>
+                <div id="iv-vs-hv" class="iv-env">—</div>
+              </div>
+              <div class="iv-grid">
+                <div><span>偏斜 Skew</span><strong id="iv-skew" class="mono">—</strong></div>
+                <div><span>IV Rank</span><strong id="iv-rank" class="mono">—</strong></div>
+                <div><span>期限结构</span><strong id="iv-term" class="mono">—</strong></div>
+                <div><span>到期日</span><strong id="iv-expiry" class="mono">—</strong></div>
+              </div>
+              <p id="iv-note" class="iv-note">IV 只描述波动幅度预期，不提供方向。</p>
+            </article>
+          </aside>
+        </main>
+      </div>
+
+      <!-- ═══ 视图 2：市场背景（IV / 宏观 / 新闻） ═══ -->
+      <div class="view view-background">
+        <div class="bg-grid">
+          <article class="side-card" id="macro-card" hidden>
+            <div class="side-card-head">
+              <span class="side-label">FRED 宏观背景</span>
+              <span class="chip chip-muted">日频</span>
+            </div>
+            <div id="macro-strip" class="macro-strip"></div>
+          </article>
+
+          <article class="side-card" id="news-card" hidden>
+            <div class="side-card-head">
+              <span class="side-label">新闻背景</span>
+              <span class="chip chip-muted">预期差参考</span>
+            </div>
+            <div id="news-list" class="news-list"></div>
+            <div class="news-disclaimer">仅作预期差 / 是否已定价参考，非触发信号</div>
+          </article>
+        </div>
+      </div>
+
+      <!-- ═══ 视图 3：复盘记录（KPI + 情境 + 历史） ═══ -->
+      <div class="view view-review">
+        <section class="review-bay">
+          <article class="side-card" id="review-card">
+            <div class="side-card-head">
+              <span class="side-label">建议质量 · 复盘</span>
+              <span class="chip chip-muted">测量层</span>
+            </div>
+            <div class="review-hero">
+              <div class="review-kpi">
+                <span>胜率（已决）</span>
+                <strong id="review-winrate" class="mono">—</strong>
+              </div>
+              <div class="review-kpi">
+                <span>平均 R</span>
+                <strong id="review-avgr" class="mono">—</strong>
+              </div>
+              <div class="review-kpi">
+                <span>样本</span>
+                <strong id="review-samples" class="mono">0</strong>
               </div>
             </div>
-
-            <div class="report-layer layer-evidence" id="layer-evidence" hidden>
-              <h3 class="layer-title">证据链 <small>报告引用的快照字段</small></h3>
-              <div id="evidence-row" class="evidence-row"></div>
-            </div>
-
-            <div class="report-layer layer-summary" id="layer-summary" hidden>
-              <h3 class="layer-title">分析依据</h3>
-              <p id="report-summary" class="report-body">点击「刷新 MT5 并生成简报」开始。系统会先取新的 MT5 快照，经事实闸门校验后再允许模型分析。</p>
-            </div>
-
-            <div class="report-layer layer-invalidation" id="layer-invalidation" hidden>
-              <h3 class="layer-title">失效条件</h3>
-              <p id="report-invalidation" class="report-body report-body-muted">数据过期、身份不匹配或事件状态变化时失效。</p>
-            </div>
-
-            <div class="report-layer layer-next" id="layer-next" hidden>
-              <h3 class="layer-title">下一观察</h3>
-              <p id="report-next" class="report-body report-body-muted">获取第一份新快照。</p>
-            </div>
-
-            <div class="report-layer layer-risk" id="layer-risk" hidden>
-              <p id="risk-note" class="risk-note"></p>
-            </div>
+            <div id="review-counts" class="review-counts"></div>
+            <div id="review-contexts" class="review-contexts"></div>
+            <p class="review-disclaimer" id="review-disclaimer">样本积累中。复盘为测量层统计：未含滑点与费用，不构成可实盘 edge 的证据。</p>
           </article>
         </section>
 
@@ -147,89 +296,18 @@
         </section>
       </div>
 
-      <!-- 副栏：进度 → 闸门 → 宏观 → 新闻 → 复盘 -->
-      <aside class="col-side">
-        <article class="side-card" id="job-progress">
-          <div class="side-card-head">
-            <span class="side-label">任务进度</span>
-            <span id="job-elapsed" class="mono chip chip-muted">尚未开始</span>
+      <!-- ═══ 视图 4：深度复盘（三家模型辩论过程） ═══ -->
+      <div class="view view-debate">
+        <div class="debate-head">
+          <div>
+            <span class="side-label">深度复盘 · 三家模型辩论</span>
+            <span class="history-hint">Qwen 3.8 技术派 · DeepSeek V4 宏观派 · GLM 5.2 风控派</span>
           </div>
-          <div id="progress-stages" class="progress-track">
-            <div class="progress-node"><i></i><span>等待任务</span></div>
-          </div>
-          <p id="job-detail" class="progress-detail">刷新页面后进度仍然存在。</p>
-        </article>
-
-        <article class="side-card gate-card">
-          <div class="side-card-head">
-            <span class="side-label">事实闸门</span>
-            <span id="gate-badge" class="chip chip-watch">观察</span>
-          </div>
-          <p id="gate-reason" class="gate-reason">事件上下文未核验。系统只允许观察型简报。</p>
-          <div class="sensor-grid">
-            <div class="sensor-row">
-              <span class="sensor-label">TICK 传感器</span>
-              <strong id="tick-status" class="mono">离线</strong>
-            </div>
-            <div class="sensor-row">
-              <span class="sensor-label">宏观背景</span>
-              <strong id="macro-status" class="mono">离线</strong>
-            </div>
-            <div class="sensor-row">
-              <span class="sensor-label">新闻背景</span>
-              <strong id="news-status" class="mono">离线</strong>
-            </div>
-          </div>
-          <div class="sys-grid">
-            <div><span>数据源</span><strong id="source-status">等待 MT5</strong></div>
-            <div><span>事件</span><strong id="event-status">未核验</strong></div>
-            <div><span>模型</span><strong id="model-status">检查中</strong></div>
-          </div>
-          <div class="gate-rule"><span>规则</span><strong>先验证，后分析</strong></div>
-        </article>
-
-        <article class="side-card" id="macro-card" hidden>
-          <div class="side-card-head">
-            <span class="side-label">FRED 宏观背景</span>
-            <span class="chip chip-muted">日频</span>
-          </div>
-          <div id="macro-strip" class="macro-strip"></div>
-        </article>
-
-        <article class="side-card" id="news-card" hidden>
-          <div class="side-card-head">
-            <span class="side-label">新闻背景</span>
-            <span class="chip chip-muted">预期差参考</span>
-          </div>
-          <div id="news-list" class="news-list"></div>
-          <div class="news-disclaimer">仅作预期差 / 是否已定价参考，非触发信号</div>
-        </article>
-
-        <article class="side-card" id="review-card">
-          <div class="side-card-head">
-            <span class="side-label">建议质量 · 复盘</span>
-            <span class="chip chip-muted">测量层</span>
-          </div>
-          <div class="review-hero">
-            <div class="review-kpi">
-              <span>胜率（已决）</span>
-              <strong id="review-winrate" class="mono">—</strong>
-            </div>
-            <div class="review-kpi">
-              <span>平均 R</span>
-              <strong id="review-avgr" class="mono">—</strong>
-            </div>
-            <div class="review-kpi">
-              <span>样本</span>
-              <strong id="review-samples" class="mono">0</strong>
-            </div>
-          </div>
-          <div id="review-counts" class="review-counts"></div>
-          <div id="review-contexts" class="review-contexts"></div>
-          <p class="review-disclaimer" id="review-disclaimer">样本积累中。复盘为测量层统计：未含滑点与费用，不构成可实盘 edge 的证据。</p>
-        </article>
-      </aside>
-    </main>
+          <button id="debate-run" class="btn btn-primary" type="button">发起辩论复盘</button>
+        </div>
+        <div id="debate-latest" class="debate-latest"><p class="empty-state">尚未发起辩论。点击「发起辩论复盘」或在上方使用深度复盘。</p></div>
+      </div>
+    </div>
 
     <footer class="footbar">
       <span>XAU 分析控制台 · 无交易权限 · 输出仅为分析产物</span>
