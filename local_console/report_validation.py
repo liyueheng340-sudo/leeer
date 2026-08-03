@@ -312,6 +312,23 @@ def validate_report(
     for _key, _default in NARRATIVE_DEFAULTS.items():
         if not isinstance(payload.get(_key), str) or not payload[_key].strip():
             payload[_key] = _default
+    # summary 兜底（2026-08-03 余量）：模型偶发漏 summary（实测 3 次 REJECTED 根因），
+    # 但 direction/invalidation/next_observation 常已给出。用这些字段拼一个简短
+    # 摘要，保证简报有内容可展示——"宁给低置信度建议，不可给没有建议"（宪法第二条）。
+    if not isinstance(payload.get("summary"), str) or not payload["summary"].strip():
+        parts = []
+        direction = payload.get("direction")
+        if direction == "LONG":
+            parts.append("当前倾向偏多")
+        elif direction == "SHORT":
+            parts.append("当前倾向偏空")
+        elif direction == "NEUTRAL":
+            parts.append("当前倾向观望")
+        for key in ("invalidation", "next_observation"):
+            val = payload.get(key)
+            if isinstance(val, str) and val.strip():
+                parts.append(str(val).strip())
+        payload["summary"] = "；".join(parts) if parts else "当前无明确方向，建议等待结构确认。"
     missing = REQUIRED_KEYS - set(payload)
     if missing:
         return False, f"报告缺少字段：{', '.join(sorted(missing))}", None

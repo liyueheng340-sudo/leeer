@@ -316,6 +316,21 @@ class BriefValidationTests(unittest.TestCase):
         self.assertEqual("报告正文必须使用中文：summary", reason)
         self.assertIsNone(report)
 
+    def test_missing_summary_backfilled_from_direction(self):
+        # 2026-08-03 余量：模型偶发漏 summary（实测 3 次 REJECTED 根因），
+        # 用 direction/invalidation/next_observation 拼出摘要，保证简报可展示。
+        payload = analyse_payload()
+        del payload["summary"]
+
+        accepted, reason, report = validate_report(payload, ANALYSE_GATE, analyse_snapshot())
+
+        self.assertTrue(accepted)
+        self.assertEqual("报告已验收", reason)
+        self.assertIsInstance(report["summary"], str)
+        self.assertTrue(report["summary"].strip())
+        # 摘要应包含方向倾向
+        self.assertIn("偏多", report["summary"])  # analyse_payload 默认 LONG
+
     def test_directional_gate_requires_trade_keys(self):
         payload = analyse_payload()
         del payload["take_profit"]
