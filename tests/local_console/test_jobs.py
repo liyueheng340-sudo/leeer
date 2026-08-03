@@ -34,6 +34,36 @@ class JobStoreTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "terminal"):
                 store.transition(job.id, "MODEL", "Must not restart")
 
+    def test_touch_refreshes_updated_at_without_stage_transition(self):
+        # 辩论心跳：长任务推进期间刷新 updated_at，防止陈旧扫描误杀仍在跑的任务
+        # （2026-08-03 实测：752 秒辩论被 750s 阈值误杀）。
+        with tempfile.TemporaryDirectory() as directory:
+            store = JobStore(Path(directory))
+            job = store.create("brief")
+            store.transition(job.id, "MODEL", "三家模型辩论中")
+            stale = store.get(job.id)
+            stale.updated_at = "2026-07-30T00:00:00+00:00"
+            store._write(stale)
+
+            touched = store.touch(job.id, "三家模型辩论中（Qwen/DeepSeek/GLM）")
+            record = store.get(job.id)
+
+        self.assertEqual("MODEL", touched.stage)  # 心跳不改变阶段
+        self.assertGreater(record.updated_at, "2026-07-30T00:00:00+00:00")
+        self.assertEqual("三家模型辩论中（Qwen/DeepSeek/GLM）", record.detail)
+
+    def test_touch_is_noop_on_terminal_job(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = JobStore(Path(directory))
+            job = store.create("brief")
+            store.transition(job.id, "COMPLETE", "Done")
+            before = store.get(job.id).updated_at
+
+            touched = store.touch(job.id, "不该更新")
+
+        self.assertEqual("COMPLETE", touched.stage)
+        self.assertEqual(before, touched.updated_at)
+
     def test_stale_active_job_is_failed_on_recovery(self):
         with tempfile.TemporaryDirectory() as directory:
             store = JobStore(Path(directory))

@@ -248,12 +248,13 @@ class WorstCaseBudgetTests(unittest.TestCase):
 
     def test_deep_path_has_no_retry(self):
         self.assertEqual(0, DEEP_MODEL_MAX_RETRIES)
-        # 深度复盘已是三家辩论：最坏耗时 = 辩论轮数上限 × 单轮超时，
-        # 陈旧任务扫描据此阈值才不会在辩论中途误杀任务（此前必败根因）。
+        # 深度复盘已是三家辩论：最坏耗时 = (修复轮 + 最大轮数) × 单轮超时，
+        # 修复轮（第 1 轮 <2 家有效时触发）使最坏调用数达 4 轮——陈旧阈值
+        # 若只按 3 轮算会在辩论中途误杀任务（2026-08-03 实测 752s 被 750s 阈值误杀）。
         from local_console.debate import DEBATE_MAX_ROUNDS, DEBATE_TIMEOUT_SECONDS
 
         self.assertEqual(
-            DEBATE_TIMEOUT_SECONDS * DEBATE_MAX_ROUNDS,
+            DEBATE_TIMEOUT_SECONDS * (DEBATE_MAX_ROUNDS + 1),
             worst_case_seconds("deep_review"),
         )
 

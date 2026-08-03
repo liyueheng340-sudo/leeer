@@ -157,7 +157,27 @@ def run_job(service: object, job_id: str) -> None:
             from .debate import run_debate
 
             service._advance(job_id, "MODEL", "三家模型辩论中（Qwen/DeepSeek/GLM）", gate=gate_payload)
-            debate_result = run_debate(service.config, facts, gate, record.mode)
+            # 辩论最坏 ~960s（4 轮 × 240s），远超陈旧阈值余量：心跳线程每 60s
+            # 刷新 updated_at，防止陈旧扫描误杀仍在推进的辩论（2026-08-03 实测
+            # 752 秒辩论被 750s 阈值误杀）。daemon 线程随辩论结束停止。
+            heartbeat_stop = threading.Event()
+
+            def _debate_heartbeat() -> None:
+                while not heartbeat_stop.wait(60):
+                    try:
+                        service.store.touch(job_id, "三家模型辩论中（Qwen/DeepSeek/GLM）")
+                    except Exception:
+                        heartbeat_stop.set()
+                        return
+
+            heartbeat = threading.Thread(
+                target=_debate_heartbeat, name=f"xau-debate-hb-{job_id[:8]}", daemon=True
+            )
+            heartbeat.start()
+            try:
+                debate_result = run_debate(service.config, facts, gate, record.mode)
+            finally:
+                heartbeat_stop.set()
             consensus = debate_result["consensus"]
             report = consensus.get("report")
             service._advance(job_id, "VALIDATE", "正在汇总辩论共识并校验", gate=gate_payload, debate=debate_result)

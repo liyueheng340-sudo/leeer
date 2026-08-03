@@ -130,13 +130,15 @@ def worst_case_seconds(kind: JobKind) -> float:
     """模型阶段最坏耗时（每次超时 × 尝试次数 + 重试退避）。
 
     供陈旧任务阈值取两种任务的最大值，确保深度复盘的长推理不会被误判为超时。
-    深度复盘已改为三家辩论（第 1 轮并行 + 第 2 轮交叉 + 分歧时第 3 轮）：
-    每轮最坏 DEBATE_TIMEOUT_SECONDS，最多 3 轮，必须覆盖整场辩论时长，
-    否则陈旧任务扫描会在辩论中途误杀任务（此前"深度复盘必败"根因之一）。
+    深度复盘已是三家辩论（第 1 轮并行 + 失败修复轮 + 第 2 轮交叉 + 分歧时第 3 轮）：
+    每轮最坏 DEBATE_TIMEOUT_SECONDS，**最坏路径含修复轮共 4 轮调用**——
+    若只按 3 轮算（720s），陈旧扫描会在辩论中途误杀任务（2026-08-03 实测：
+    04:43 单辩论 752 秒被 FAILED，恰好撞上 750s 阈值，任务并未失败）。
     """
     if kind == "deep_review":
         from .debate import DEBATE_MAX_ROUNDS, DEBATE_TIMEOUT_SECONDS
 
-        return DEBATE_TIMEOUT_SECONDS * DEBATE_MAX_ROUNDS
+        # 修复轮 + 最大轮数 = 至多 4 轮调用（第 1 轮 <2 家有效时触发修复轮）。
+        return DEBATE_TIMEOUT_SECONDS * (DEBATE_MAX_ROUNDS + 1)
     timeout, retries = MODEL_TIMEOUT_SECONDS, MODEL_MAX_RETRIES
     return timeout * (retries + 1) + MODEL_RETRY_BACKOFF_SECONDS * retries

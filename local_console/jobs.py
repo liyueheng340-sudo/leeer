@@ -203,6 +203,22 @@ class JobStore:
             record.review = review
             return self._write(record)
 
+    def touch(self, job_id: str, detail: str | None = None) -> JobRecord:
+        """Refresh updated_at (heartbeat) without a stage transition.
+
+        长任务（三家辩论最坏 4 轮 × 240s ≈ 960s）期间保持 updated_at 新鲜，
+        避免陈旧任务扫描在任务仍在推进时误杀——2026-08-03 实测：
+        辩论 752 秒被 750s 陈旧阈值判 FAILED（任务其实还在跑）。
+        """
+        with self._transition_lock:
+            record = self.get(job_id)
+            if record.stage in TERMINAL_STAGES:
+                return record  # 终态任务无需心跳
+            record.updated_at = utc_now()
+            if detail:
+                record.detail = detail
+            return self._write(record)
+
     def transition(self, job_id: str, stage: JobStage, detail: str, **updates: object) -> JobRecord:
         with self._transition_lock:
             if stage not in VALID_STAGES:
