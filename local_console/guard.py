@@ -1,8 +1,13 @@
 """Deterministic gates for MT5 facts, event context and model eligibility.
 
-系统宪法（docs/xau-system-constitution.md）：分析层永不锁死——系统是军师不是保安。
-闸门只在第一手数据不可用时 BLOCKED；其余一切（事件窗口、市场状态、流动性、
-共振、点差、EA 风控态）都转为 warnings 标注，随报告呈现给交易者，绝不阻断分析。
+系统宪法（docs/xau-system-constitution.md）双层设计：
+- 第二条 分析层永不锁死——系统是军师不是保安。闸门只在第一手数据不可用时
+  BLOCKED；事件窗口、市场状态、流动性、共振、EA 风控态等一律转为 warnings 标注，
+  随报告呈现给交易者，绝不阻断分析，模型照常运行。
+- 第九条 入场纪律层（2026-08-03 修正案一）——入场方案基于实证测量证据可被撤销：
+  点差高位/scalp 亚洲时段触发 directional_plan_allowed=False（不给方向计划但照常
+  出观察，"不给方案"≠"不开口"）。否决权只来自本地实证负期望证据（见各闸门函数
+  引用的证据数字），策略意见禁方向仍违宪；拦截原因必须随 gate.warnings 透明呈现。
 """
 
 from __future__ import annotations
