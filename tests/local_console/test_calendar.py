@@ -370,6 +370,13 @@ class CalendarSourceParsingTests(unittest.TestCase):
 
 
 class CalendarRefreshThrottleTests(unittest.TestCase):
+    def setUp(self) -> None:
+        # 重置模块级失败退避状态，避免用例间互相污染
+        # （test_fetch_failure_keeps_local_file 会设置退避，污染同进程后续用例）。
+        import local_console.calendar_refresh as calendar_refresh
+
+        calendar_refresh._last_fetch_failure_at = 0.0
+
     def make_config(self, root: Path) -> ConsoleConfig:
         return ConsoleConfig(
             repo_root=root,

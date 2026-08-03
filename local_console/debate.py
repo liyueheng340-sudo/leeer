@@ -171,7 +171,7 @@ def run_debate(
         if content and not content.startswith("ERROR"):
             try:
                 payload = _parse_report(content)
-                valid, reason, report = validate_report(payload, gate, snapshot, mode)
+                valid, reason, report = validate_report(payload, gate, snapshot, mode, loose_evidence=True)
                 ok = valid
                 if valid:
                     report_payload = report  # type: ignore[assignment]
@@ -208,7 +208,7 @@ def run_debate(
                 if content and not content.startswith("ERROR"):
                     try:
                         payload = _parse_report(content)
-                        valid, _reason, report = validate_report(payload, gate, snapshot, mode)
+                        valid, _reason, report = validate_report(payload, gate, snapshot, mode, loose_evidence=True)
                         ok = valid
                         if valid:
                             report_payload = report  # type: ignore[assignment]

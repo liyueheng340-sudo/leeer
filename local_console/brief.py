@@ -28,7 +28,9 @@ from .report_validation import validate_report
 # 在应用层做有限重试（客户端层 max_retries 保持 0，避免双层重试叠加）。
 MODEL_MAX_RETRIES = 1
 MODEL_RETRY_BACKOFF_SECONDS = 5
-MODEL_TIMEOUT_SECONDS = 90
+# 快评也用推理模型（qwen3.7-max 实测常态 73s、偶发 90-100s）：90s 上限会在
+# 临界点频繁超时触发重试（总耗时翻倍到 185s）。放宽到 120s 留足余量。
+MODEL_TIMEOUT_SECONDS = 120
 # 深度复盘用的是推理模型，显著比快评的轻量模型慢（实测常态 55-90 秒、偶尔更长）：
 # 若沿用快评的 90 秒上限，会在临界点频繁超时失败，故单独放宽到 180 秒。
 DEEP_MODEL_TIMEOUT_SECONDS = 180

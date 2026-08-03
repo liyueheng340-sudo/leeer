@@ -27,13 +27,19 @@ def run_startup_housekeeping(service: object) -> None:
             return
         tick = safe_tick_health(service.config, "self_check", service.tick_runner)
         calendar_state = evaluate_calendar(service.config.calendar_path)
+        # 日历状态细分：文件缺失（长期拉取失败）与文件过期分开呈现——
+        # missing 红灯（前端 lamp bad），stale 黄灯（前端 lamp warn）。
+        calendar_file_missing = not service.config.calendar_path.is_file()
+        calendar_status = (
+            "fresh" if calendar_state.get("status") in ("verified_clear", "wait")
+            else "missing" if calendar_file_missing
+            else "stale"
+        )
         service.self_check_result = {
             "status": "done",
             "mt5": "ok" if tick.get("available") is True else "offline",
             "fred": "configured" if os.environ.get("FRED_API_KEY") else "missing_key",
-            "calendar": (
-                "fresh" if calendar_state.get("status") in ("verified_clear", "wait") else "stale"
-            ),
+            "calendar": calendar_status,
             "checked_at": datetime.now(UTC).isoformat(),
         }
         log_event(service.config.runlog_path, kind="self_check", **service.self_check_result)

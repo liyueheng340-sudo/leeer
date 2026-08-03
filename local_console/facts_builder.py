@@ -12,6 +12,7 @@ from .brief import PROMPT_VERSION
 from .guard import GateResult, evaluate_gate
 from .regime import compute_market_regime
 from .resonance import compute_resonance
+from .snapshot_facts import _key_levels
 
 
 def build_gate_payload(
@@ -131,6 +132,11 @@ def build_facts(
 ) -> dict[str, object]:
     """模型事实包 = MT5 快照 + 宏观背景层 + tick 传感器读数 + 事件日历 + IV 波动层。"""
     facts = dict(snapshot)
+    # 关键价位层注入 facts 顶层：source 白名单允许引用 key_levels，
+    # 但此前快照字典里没有该键 → 模型引用即被判"不在已提供事实中"被拒
+    # （2026-08-03 实测 2 次 REJECTED 根因之一）。注入后 evidence_fields
+    # 引用 key_levels 可解析，且 prompt 的 facts_paths 清单也会带上它。
+    facts["key_levels"] = _key_levels(snapshot)
     facts["background_macro"] = macro
     facts["tick_health"] = tick_health
     facts["event_context"] = event_context

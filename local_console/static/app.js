@@ -421,7 +421,8 @@ function renderSelfCheck(selfCheck) {
     const el = byId(id);
     if (!el) return;
     const good = state === "ok" || state === "configured" || state === "fresh";
-    const bad = state === "offline" || state === "missing_key";
+    // missing = 日历文件从未写入（长期拉取失败）→ 红灯，与 offline/missing_key 同级
+    const bad = state === "offline" || state === "missing_key" || state === "missing";
     const tone = LAMP_TONES[id] || "";
     el.className = `lamp ${good ? "ok" : bad ? "bad" : state ? "warn" : ""} ${tone}`;
     el.title = `${el.textContent} 自检：${state || "未知"}`;

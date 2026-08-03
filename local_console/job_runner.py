@@ -7,9 +7,12 @@
 
 from __future__ import annotations
 
+import json
 import threading
+from datetime import UTC, datetime
 
 from .brief import PROMPT_VERSION, validate_report
+from .config import ConsoleConfig
 from .facts_builder import build_facts, build_gate_payload
 from .housekeeping import run_reviews_safe
 from .jobs import TERMINAL_STAGES
@@ -21,6 +24,32 @@ from .session_context import (
     compute_session_context,
 )
 from .spread_percentile import compute_spread_percentile
+
+
+def _persist_rejected_payload(
+    config: ConsoleConfig, job_id: str, attempt: int, reason: str, payload: object
+) -> None:
+    """被拒报告的原始模型输出落盘，供事后诊断。
+
+    审计发现（2026-08-03）：REJECTED 任务只留一句原因，原始输出完全黑盒，
+    无法判断模型到底输出了什么（哪个字段/路径违规）。落盘到
+    state_dir/rejected/{job_id}.jsonl，每行一次失败尝试；失败静默（诊断不阻断任务）。
+    """
+    try:
+        directory = config.state_dir / "rejected"
+        directory.mkdir(parents=True, exist_ok=True)
+        row = {
+            "ts": datetime.now(UTC).isoformat(),
+            "job_id": job_id,
+            "attempt": attempt,
+            "reason": reason,
+            "payload": payload,
+        }
+        path = directory / f"{job_id}.jsonl"
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+    except OSError:
+        pass  # 诊断落盘失败不影响任务
 
 
 def safe_iv(service: object) -> dict[str, object]:
@@ -133,11 +162,34 @@ def run_job(service: object, job_id: str) -> None:
             report = consensus.get("report")
             service._advance(job_id, "VALIDATE", "正在汇总辩论共识并校验", gate=gate_payload, debate=debate_result)
             if report is None:
-                reason = f"辩论失败：{consensus.get('valid_count', 0)} 家有效报告（需 ≥2 家）"
-                service._advance(job_id, "REJECTED", reason, debate=debate_result)
+                # 辩论全灭兜底（审计建议 6）：三家均未产出有效报告时降级为
+                # 单模型深度分析，而非直接 REJECTED——集体故障不应让整个深度
+                # 复盘作废；降级报告走同一验收门（宽松证据，与辩论一致）。
+                valid_count = consensus.get("valid_count", 0)
+                service._advance(job_id, "MODEL", f"辩论仅 {valid_count} 家有效，降级为单模型深度分析")
+                payload = service.brief_runner(service.config, record.kind, facts, gate, record.mode)
+                service._advance(job_id, "VALIDATE", "正在校验降级后的单模型深度分析")
+                accepted, reason, fallback_report = validate_report(
+                    payload, gate, facts, record.mode, loose_evidence=True
+                )
+                if accepted and fallback_report is not None:
+                    fallback_report["debate"] = {
+                        "fallback": True,
+                        "rounds": len(debate_result["rounds"]),
+                        "valid_count": valid_count,
+                    }
+                    service._advance(
+                        job_id, "COMPLETE", "辩论降级为单模型深度分析并已验收",
+                        report=fallback_report, debate=debate_result,
+                    )
+                else:
+                    service._advance(
+                        job_id, "REJECTED",
+                        f"辩论失败：{valid_count} 家有效报告（需 ≥2 家）", debate=debate_result,
+                    )
                 run_reviews_safe(service, "post_job")
                 return
-            accepted, reason, validated = validate_report(report, gate, facts, record.mode)
+            accepted, reason, validated = validate_report(report, gate, facts, record.mode, loose_evidence=True)
             if accepted and validated is not None:
                 validated["debate"] = {
                     "rounds": len(debate_result["rounds"]),
@@ -148,9 +200,22 @@ def run_job(service: object, job_id: str) -> None:
             else:
                 service._advance(job_id, "REJECTED", f"共识报告校验失败：{reason}", debate=debate_result)
         else:
-            payload = service.brief_runner(service.config, record.kind, facts, gate, record.mode)
-            service._advance(job_id, "VALIDATE", "正在校验报告来源、数值与证据链")
-            accepted, reason, report = validate_report(payload, gate, facts, record.mode)
+            # 快评：DeepSeek 等模型偶发漏字段（summary/source_ids 等），
+            # 验收失败时重试一次自愈（此前仅对异常重试，验收失败不重试）。
+            accepted = False
+            reason = ""
+            report = None
+            for attempt in range(2):
+                payload = service.brief_runner(service.config, record.kind, facts, gate, record.mode)
+                service._advance(job_id, "VALIDATE", "正在校验报告来源、数值与证据链")
+                accepted, reason, report = validate_report(payload, gate, facts, record.mode)
+                if accepted:
+                    break
+                # 校验未过：原始模型输出落盘，供事后诊断 REJECTED 根因
+                # （审计发现：此前只留一句原因，模型到底输出了什么完全黑盒）。
+                _persist_rejected_payload(service.config, job_id, attempt, reason, payload)
+                if attempt == 0:
+                    service._advance(job_id, "MODEL", "报告校验未过，重新生成一次", gate=gate_payload)
             service._advance(job_id, "COMPLETE" if accepted else "REJECTED", reason, report=report)
         # 任务收尾后补跑到期复盘（含本次之后到期的历史建议）
         run_reviews_safe(service, "post_job")

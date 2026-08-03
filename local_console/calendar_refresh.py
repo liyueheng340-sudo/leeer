@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import urlparse
@@ -14,18 +15,44 @@ from .config import ConsoleConfig
 
 FETCH_THROTTLE_HOURS = 3
 FETCH_TIMEOUT_SECONDS = 10
+# 全部源拉取失败后的退避窗口：源故障/限流时不随每个任务反复锤源
+# （2026-08-03：nfs 源在连续请求下返回 429；此前 calendar.json 缺失时
+#  每次任务都触发网络拉取，源一限流就反复失败且拖慢 GATE 阶段）。
+FETCH_FAILURE_BACKOFF_SECONDS = 1800  # 30 分钟
 # 日历源响应体上限：防异常源/错误源返回超大响应拖垮进程（2 MiB 对周历足够）。
 CALENDAR_MAX_BYTES = 2 * 1024 * 1024
 CALENDAR_URL_ENV = "XAU_CONSOLE_CALENDAR_URL"
-# 免费公开周历（ForexFactory/faireconomy），仅取 USD 事件
-DEFAULT_CALENDAR_URL = "https://cdn-nfs.faireconomy.media/ff_calendar_thisweek.xml"
+# 免费公开周历（ForexFactory/faireconomy），仅取 USD 事件。
+# 2026-08-03 修复：cdn-nfs 在本网络 TLS 握手即被掐断（SSL EOF），
+# nfs（同源同内容，无 cdn- 前缀）可正常访问——主源失败时按序回退备用源，
+# 避免事件日历层整体失效（此前 calendar.json 从未写入，所有任务都带"未核验"标注）。
+DEFAULT_CALENDAR_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.xml"
+CALENDAR_FALLBACK_URLS = (
+    "https://cdn-nfs.faireconomy.media/ff_calendar_thisweek.xml",
+)
+
+# 进程内最后一次全源失败时刻（monotonic，0 = 无失败记录）；源故障时退避，避免每次任务重试。
+_last_fetch_failure_at: float = 0.0
 
 
 def refresh_calendar_from_url(config: ConsoleConfig) -> bool:
-    """Throttled best-effort refresh of calendar.json from the configured/default URL."""
-    url = os.environ.get(CALENDAR_URL_ENV) or DEFAULT_CALENDAR_URL
+    """Throttled best-effort refresh of calendar.json, trying sources in order.
+
+    源顺序：环境变量 URL（若有）→ 默认源 → 备用源；任一成功即写入并返回 True。
+    全部失败返回 False（调用方按 unverified 降级，不阻断分析）。
+    全源失败后进入 FETCH_FAILURE_BACKOFF_SECONDS 退避，期间直接返回 False 不碰网络。
+    """
+    global _last_fetch_failure_at
+    primary = os.environ.get(CALENDAR_URL_ENV) or DEFAULT_CALENDAR_URL
+    candidates = [primary] + [
+        url for url in CALENDAR_FALLBACK_URLS if url != primary
+    ]
     # 只允许 http/https 源，杜绝 file:// 等本地/任意协议读取（注入面收敛）。
-    if urlparse(url).scheme.lower() not in {"http", "https"}:
+    candidates = [url for url in candidates if urlparse(url).scheme.lower() in {"http", "https"}]
+    if not candidates:
+        return False
+    # 全源失败退避：源故障/限流时不随任务反复锤源。
+    if time.monotonic() - _last_fetch_failure_at < FETCH_FAILURE_BACKOFF_SECONDS:
         return False
     try:
         mtime = datetime.fromtimestamp(config.calendar_path.stat().st_mtime, UTC)
@@ -33,27 +60,36 @@ def refresh_calendar_from_url(config: ConsoleConfig) -> bool:
             return False  # 3 小时内拉过，不重复请求
     except OSError:
         pass  # 文件不存在 → 立即拉取
-    try:
-        with urlopen(url, timeout=FETCH_TIMEOUT_SECONDS) as response:
-            text = response.read(CALENDAR_MAX_BYTES + 1).decode("utf-8", errors="replace")
+    for url in candidates:
+        try:
+            with urlopen(url, timeout=FETCH_TIMEOUT_SECONDS) as response:
+                text = response.read(CALENDAR_MAX_BYTES + 1).decode("utf-8", errors="replace")
             if len(text) > CALENDAR_MAX_BYTES:
-                return False  # 响应超过上限，拒绝使用
-    except OSError:
-        return False
-    events = parse_calendar_payload(text)
-    if not events:
-        return False
-    payload: dict[str, Any] = {
-        "updated_at": datetime.now(UTC).isoformat(),
-        "source": url,
-        "schema_version": CALENDAR_SCHEMA_VERSION,
-        "events": events,
-    }
-    try:
-        config.calendar_path.parent.mkdir(parents=True, exist_ok=True)
-        config.calendar_path.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-    except OSError:
-        return False
-    return True
+                continue  # 响应超过上限，尝试下一个源
+        except OSError:
+            continue  # 当前源不可达（如 TLS 被掐断），尝试下一个源
+        events = parse_calendar_payload(text)
+        if events is None:
+            continue  # 格式无法识别（非 JSON/ICS/FF-XML），尝试下一个源
+        # 注意：events 为空列表 ≠ 拉取失败——本周无 USD 事件（休市周/安静周）是合法
+        # 状态，照常写入空日历；evaluate_calendar 对空日历判 verified_clear，
+        # 3 小时节流随之生效，避免每次任务都重新拉取（2026-08-03 修复：
+        # 此前 `if not events` 把空日历当失败，calendar.json 永不存在，
+        # 每个任务都锤源拉取，源一限流就反复失败）。
+        payload: dict[str, Any] = {
+            "updated_at": datetime.now(UTC).isoformat(),
+            "source": url,
+            "schema_version": CALENDAR_SCHEMA_VERSION,
+            "events": events,
+        }
+        try:
+            config.calendar_path.parent.mkdir(parents=True, exist_ok=True)
+            config.calendar_path.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+        except OSError:
+            return False
+        _last_fetch_failure_at = 0.0  # 成功即清除失败标记
+        return True
+    _last_fetch_failure_at = time.monotonic()  # 全源失败：记录退避起点
+    return False

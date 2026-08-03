@@ -102,12 +102,29 @@ ALLOWED_LATIN_TERMS = {
     "TP",
     "WATCH",
     "XAUUSD",
+    "SCORE",   # 模型引用共振事实时的标准写法（score +0.20）
+    "RSI",
+    "ADX",
+    "STDDEV",
 }
 
 
 def allowed_source_ids(snapshot: dict[str, object] | None = None) -> set[str]:
     """Source ids a report may cite, derived from the available facts."""
     allowed = {"mt5_snapshot"}
+    # 快照内嵌的确定性事实（由已收盘 K 线复算）属于 mt5_snapshot 的一部分：
+    # 模型引用它们时可能写成独立源名，视为同一来源（2026-08-02 修复：
+    # DeepSeek 把共振/市场状态写进 source_ids 导致误拒）。
+    allowed |= {
+        "timeframe_resonance",
+        "market_regime",
+        "timeframe_structure",
+        "latest_closed_bars",
+        "key_levels",
+        "atr",
+        "option_iv",
+        "session_context",  # A1 交易时段（确定性时间函数，2026-08-02 注入）
+    }
     # 军师模式：gate.action 恒为 ANALYSE（除 BLOCKED），是否允许引用事件日历
     # 取决于快照中事件上下文是否已核验（未核验不得声称具体事件，真实性保底）。
     event_ctx = (snapshot or {}).get("event_context")
@@ -116,13 +133,41 @@ def allowed_source_ids(snapshot: dict[str, object] | None = None) -> set[str]:
     macro = (snapshot or {}).get("background_macro")
     if isinstance(macro, dict) and macro.get("status") == "ok":
         allowed.add("fred_macro_background")
+        allowed.add("background_macro")  # DeepSeek 等模型常用短名，等价于 fred_macro_background
     tick = (snapshot or {}).get("tick_health")
     if isinstance(tick, dict) and tick.get("available") is True:
         allowed.add("mt5_tick_health")
+        allowed.add("tick_health")  # DeepSeek 等模型常用短名，等价于 mt5_tick_health
     news = (snapshot or {}).get("news_context")
-    if isinstance(news, dict) and news.get("status") == "ok" and news.get("items"):
+    # news status=ok 即可引用（休市时 items 可能为空列表，空源 ≠ 未提供数据）
+    if isinstance(news, dict) and news.get("status") == "ok":
         allowed.add("news_context")
     return allowed
+
+
+def _flatten_fact_paths(
+    facts: dict[str, object], max_depth: int = 3, max_paths: int = 120
+) -> list[str]:
+    """把事实包扁平化为真实字段路径清单，供 evidence_fields 照抄。
+
+    列表统一用 items[] 通配（模型可写 items[N] 或 items[]，validator 两者都认）。
+    控制深度与总数，避免 prompt 膨胀；字典/列表节点本身也算一条有效路径。
+    """
+    paths: list[str] = []
+
+    def walk(node: object, prefix: str, depth: int) -> None:
+        if depth > max_depth or len(paths) >= max_paths:
+            return
+        if isinstance(node, dict):
+            for key, value in node.items():
+                path = f"{prefix}.{key}" if prefix else str(key)
+                paths.append(path)
+                walk(value, path, depth + 1)
+        elif isinstance(node, list) and node and isinstance(node[0], dict):
+            walk(node[0], f"{prefix}[]", depth + 1)
+
+    walk(facts, "", 0)
+    return paths
 
 
 def _clean_warning(text: str, limit: int = 200) -> str:
@@ -177,16 +222,22 @@ def build_prompt(
     output_rules = [
         "Return one JSON object and no markdown.",
         "所有 summary、invalidation、next_observation、risk_note 字段必须使用简体中文；不得用英文输出。",
-        "中文字段里只允许出现白名单英文缩写（如 TP、SL、ATR、XAUUSD、DXY、FRED、FOMC、CPI、NFP、PCE、M5、M15、H1、H4）；"
-        "其它任何英文单词（包括 risk、note、support、resistance 等普通词）都会导致报告被拒绝。",
+        "中文字段里允许白名单英文缩写（如 TP、SL、ATR、XAUUSD、DXY、FRED、FOMC、CPI、NFP、PCE、M5、M15、H1、H4、RSI、ADX、score）；"
+        "普通英文单词（如 risk、note、support、resistance、volatility）会导致报告被拒绝。",
         "Use only allowed_sources.",
+        "source_ids 必须包含 mt5_snapshot，并列出你实际引用的数据来源（如 fred_macro_background、news_context、mt5_tick_health 等，可写短名）。",
         "Do not claim an unprovided price, indicator, news item, or event.",
         "Do not promise returns or describe automated execution.",
         "When directional_plan_allowed is false, provide observation and wait conditions only.",
         f"The 'action' field in your output MUST be \"{gate.action}\" (matching gate_action).",
-        "evidence_fields 必须列出结论所依据的 facts 字段路径（例如 'bid'、'timeframe_structure.h1.atr_14'），"
-        "不得虚构不存在的字段。",
+        "evidence_fields 必须列出结论所依据的 facts 字段路径，只能使用下方 facts_paths 清单中真实存在的路径，"
+        "不得虚构不存在的字段；列表字段用 items[N] 或 items[] 索引（如 'news_context.items[0].title'）。",
     ]
+    # 把事实包扁平化为真实字段路径清单，让模型照抄而非猜结构（2026-08-02：
+    # DeepSeek/GLM 常编造 items[1] 越界路径或把 prompt 文本当字段名导致 REJECTED）。
+    facts_paths = _flatten_fact_paths(snapshot, max_depth=3)
+    if facts_paths:
+        output_rules.append(f"facts_paths（可用字段清单，evidence_fields 只能从中选择）: {json.dumps(facts_paths, ensure_ascii=False)}")
     macro = snapshot.get("background_macro")
     if isinstance(macro, dict) and macro.get("status") == "ok":
         output_rules.append(

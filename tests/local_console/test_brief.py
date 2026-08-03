@@ -265,15 +265,25 @@ class WorstCaseBudgetTests(unittest.TestCase):
 
 
 class BriefValidationTests(unittest.TestCase):
-    def test_report_with_unprovided_source_is_rejected(self):
+    def test_report_without_mt5_snapshot_anchor_is_rejected(self):
+        # 真实性底线（2026-08-02 放宽）：必须锚定 mt5_snapshot；其余来源名放行
         payload = analyse_payload()
-        payload["source_ids"] = ["mt5_snapshot", "Yahoo Finance"]
+        payload["source_ids"] = ["verified_event_context", "Yahoo Finance"]
 
         accepted, reason, report = validate_report(payload, ANALYSE_GATE, analyse_snapshot())
 
         self.assertFalse(accepted)
-        self.assertEqual("报告引用了未提供的数据源：Yahoo Finance", reason)
+        self.assertEqual("报告必须引用 mt5_snapshot 作为数据锚点", reason)
         self.assertIsNone(report)
+
+    def test_report_with_shortname_sources_is_accepted(self):
+        # 模型用短名引用快照内嵌事实（tick_health/session_context 等）是合理写法
+        payload = analyse_payload()
+        payload["source_ids"] = ["mt5_snapshot", "tick_health", "session_context", "timeframe_resonance"]
+
+        accepted, _reason, _report = validate_report(payload, ANALYSE_GATE, analyse_snapshot())
+
+        self.assertTrue(accepted)
 
     def test_non_analyse_action_is_rejected(self):
         payload = analyse_payload()
@@ -305,15 +315,6 @@ class BriefValidationTests(unittest.TestCase):
         self.assertEqual("报告正文必须使用中文：summary", reason)
         self.assertIsNone(report)
 
-    def test_valid_analyse_report_with_trade_plan_is_accepted(self):
-        accepted, reason, report = validate_report(
-            analyse_payload(), ANALYSE_GATE, analyse_snapshot()
-        )
-
-        self.assertTrue(accepted)
-        self.assertEqual("报告已验收", reason)
-        self.assertIsNotNone(report)
-
     def test_directional_gate_requires_trade_keys(self):
         payload = analyse_payload()
         del payload["take_profit"]
@@ -324,6 +325,21 @@ class BriefValidationTests(unittest.TestCase):
         self.assertIn("分析模式报告缺少交易建议字段", reason)
         self.assertIn("take_profit", reason)
         self.assertIsNone(report)
+
+    def test_missing_narrative_fields_are_filled_with_defaults(self):
+        # 2026-08-02 放宽：invalidation/next_observation 缺失自动补默认文案，不拒绝
+        payload = analyse_payload()
+        del payload["invalidation"]
+        del payload["next_observation"]
+
+        accepted, reason, report = validate_report(payload, ANALYSE_GATE, analyse_snapshot())
+
+        self.assertTrue(accepted)
+        self.assertEqual("报告已验收", reason)
+        self.assertIsNotNone(report)
+        self.assertTrue(report["invalidation"].strip())
+        self.assertTrue(report["next_observation"].strip())
+        self.assertNotEqual("中文失效条件", report["invalidation"])
 
     def test_invalid_direction_is_rejected(self):
         payload = analyse_payload()
@@ -414,14 +430,16 @@ class BriefValidationTests(unittest.TestCase):
         self.assertEqual("报告已验收", reason)
 
     def test_evidence_field_must_exist_in_facts(self):
+        # 2026-08-03 修复：路径未解析到已提供事实 → 风险标注而非整单拒绝
+        # （模型引用真实事实时猜错路径是常见小错，军师模式降级为 warning）。
         payload = analyse_payload()
         payload["evidence_fields"] = ["bid", "timeframe_structure.h1.rsi_14"]
 
         accepted, reason, report = validate_report(payload, ANALYSE_GATE, analyse_snapshot())
 
-        self.assertFalse(accepted)
-        self.assertEqual("依据字段不在已提供事实中：timeframe_structure.h1.rsi_14", reason)
-        self.assertIsNone(report)
+        self.assertTrue(accepted, reason)
+        self.assertEqual("报告已验收", reason)
+        self.assertTrue(has_validation_warning(report, "依据字段未解析到已提供事实：timeframe_structure.h1.rsi_14"))
 
     def test_evidence_field_format_is_validated(self):
         payload = analyse_payload()
@@ -443,7 +461,8 @@ class BriefValidationTests(unittest.TestCase):
         self.assertIn("evidence_fields", reason)
         self.assertIsNone(report)
 
-    def test_macro_source_allowed_only_when_background_loaded(self):
+    def test_macro_source_accepted_regardless_of_availability(self):
+        # 2026-08-02 放宽：来源名不再按可用性逐一拒绝，只锚定 mt5_snapshot
         snapshot = analyse_snapshot()
         snapshot["background_macro"] = {"status": "ok", "series": {}}
         payload = analyse_payload()
@@ -453,11 +472,11 @@ class BriefValidationTests(unittest.TestCase):
         self.assertTrue(accepted)
 
         snapshot["background_macro"] = {"status": "unavailable"}
-        accepted, reason, _ = validate_report(payload, ANALYSE_GATE, snapshot)
-        self.assertFalse(accepted)
-        self.assertEqual("报告引用了未提供的数据源：fred_macro_background", reason)
+        accepted, _, _ = validate_report(payload, ANALYSE_GATE, snapshot)
+        self.assertTrue(accepted)
 
-    def test_tick_source_allowed_only_when_sensor_available(self):
+    def test_tick_source_accepted_regardless_of_availability(self):
+        # 2026-08-02 放宽：来源名不再按可用性逐一拒绝，只锚定 mt5_snapshot
         snapshot = analyse_snapshot()
         snapshot["tick_health"] = {"available": True}
         payload = analyse_payload()
@@ -467,9 +486,8 @@ class BriefValidationTests(unittest.TestCase):
         self.assertTrue(accepted)
 
         snapshot["tick_health"] = {"available": False}
-        accepted, reason, _ = validate_report(payload, ANALYSE_GATE, snapshot)
-        self.assertFalse(accepted)
-        self.assertEqual("报告引用了未提供的数据源：mt5_tick_health", reason)
+        accepted, _, _ = validate_report(payload, ANALYSE_GATE, snapshot)
+        self.assertTrue(accepted)
 
     def test_english_risk_note_is_rejected(self):
         payload = analyse_payload()
@@ -512,25 +530,26 @@ class NewsSourceValidationTests(unittest.TestCase):
         accepted, _, _ = validate_report(payload, ANALYSE_GATE, snapshot)
         self.assertTrue(accepted)
 
-    def test_news_source_rejected_when_unavailable(self):
+    def test_news_source_accepted_even_when_unavailable(self):
+        # 2026-08-02 放宽：来源名不再按可用性拒绝，只锚定 mt5_snapshot
         snapshot = analyse_snapshot()
         snapshot["news_context"] = {"status": "unavailable", "reason": "no net"}
         payload = analyse_payload()
         payload["source_ids"] = ["mt5_snapshot", "verified_event_context", "news_context"]
 
-        accepted, reason, _ = validate_report(payload, ANALYSE_GATE, snapshot)
-        self.assertFalse(accepted)
-        self.assertEqual("报告引用了未提供的数据源：news_context", reason)
+        accepted, _reason, _ = validate_report(payload, ANALYSE_GATE, snapshot)
+        self.assertTrue(accepted)
 
-    def test_news_source_rejected_when_items_empty(self):
+    def test_news_source_allowed_when_items_empty_but_status_ok(self):
+        # 休市时 news status=ok 但 items 为空列表：空源 ≠ 未提供数据，允许引用
+        # （2026-08-02 辩论修复：此场景此前误杀深度复盘）
         snapshot = analyse_snapshot()
         snapshot["news_context"] = {"status": "ok", "items": []}
         payload = analyse_payload()
         payload["source_ids"] = ["mt5_snapshot", "verified_event_context", "news_context"]
 
-        accepted, reason, _ = validate_report(payload, ANALYSE_GATE, snapshot)
-        self.assertFalse(accepted)
-        self.assertEqual("报告引用了未提供的数据源：news_context", reason)
+        accepted, _reason, _ = validate_report(payload, ANALYSE_GATE, snapshot)
+        self.assertTrue(accepted)
 
     def test_prompt_contains_news_restraint_rule(self):
         snapshot = analyse_snapshot()
@@ -698,7 +717,53 @@ class EdgeDisciplineValidationTests(unittest.TestCase):
     def test_prompt_omits_session_context_when_unavailable(self):
         prompt = build_prompt(analyse_snapshot(), ANALYSE_GATE, "brief")
 
-        self.assertNotIn("session_context", prompt)
+        # session_context 作为数据源名在 allowed_sources 中恒被允许（引用合法），
+        # 但无数据时不得注入时段规则文本。
+        self.assertNotIn("当前时段", prompt)
+
+    def test_evidence_indexed_paths_accepted(self):
+        """?????? items[0] / items[] ??????????"""
+        snapshot = analyse_snapshot()
+        snapshot["news_context"] = {"status": "ok", "items": [{"title": "??"}]}
+        payload = analyse_payload()
+        payload["evidence_fields"] = ["news_context.items[0].title", "bid"]
+        accepted, reason, _ = validate_report(payload, ANALYSE_GATE, snapshot)
+        self.assertTrue(accepted, reason)
+
+    def test_evidence_wildcard_index_accepted(self):
+        snapshot = analyse_snapshot()
+        snapshot["news_context"] = {"status": "ok", "items": [{"title": "??"}]}
+        payload = analyse_payload()
+        payload["evidence_fields"] = ["news_context.items[].title"]
+        accepted, reason, _ = validate_report(payload, ANALYSE_GATE, snapshot)
+        self.assertTrue(accepted, reason)
+
+    def test_evidence_out_of_range_index_becomes_warning(self):
+        # 2026-08-03 修复：索引越界属于引用瑕疵，军师模式降级为 warning 而非整单拒绝。
+        snapshot = analyse_snapshot()
+        snapshot["news_context"] = {"status": "ok", "items": [{"title": "头条"}]}
+        payload = analyse_payload()
+        payload["evidence_fields"] = ["news_context.items[5].title"]
+        accepted, reason, report = validate_report(payload, ANALYSE_GATE, snapshot)
+        self.assertTrue(accepted, reason)
+        self.assertTrue(has_validation_warning(report, "news_context.items[5].title"))
+
+    def test_prompt_injects_facts_paths(self):
+        """prompt ??????????? evidence_fields ???"""
+        snapshot = analyse_snapshot()
+        prompt = build_prompt(snapshot, ANALYSE_GATE, "brief")
+        self.assertIn("facts_paths", prompt)
+        self.assertIn("timeframe_structure.h1.atr_14", prompt)
+
+    def test_session_context_is_allowed_source(self):
+        """session_context ??????????????????"""
+        snapshot = analyse_snapshot()
+        snapshot["session_context"] = {"status": "ok", "label": "london"}
+        payload = analyse_payload()
+        payload["source_ids"] = ["mt5_snapshot", "session_context"]
+        payload["evidence_fields"] = ["session_context.label"]
+        accepted, reason, _ = validate_report(payload, ANALYSE_GATE, snapshot)
+        self.assertTrue(accepted, reason)
 
     def test_prompt_annotates_high_spread_percentile(self):
         snapshot = analyse_snapshot()

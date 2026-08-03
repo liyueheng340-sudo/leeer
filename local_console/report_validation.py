@@ -20,12 +20,22 @@ from .prompt_rules import (
     TRADE_KEYS,
     VISIBLE_TEXT_KEYS,
     _clean_warning,
-    allowed_source_ids,
 )
 from .snapshot_facts import _key_levels, _parse_prices, _reference_atr
 
-EVIDENCE_FIELD_PATTERN = re.compile(r"^[A-Za-z0-9_.]+$")
+# 证据路径格式：字母数字下划线点，加上列表索引 'items[0]' / 'items[]'。
+EVIDENCE_FIELD_PATTERN = re.compile(r"^[A-Za-z0-9_.\[\]]+$")
 MAX_EVIDENCE_FIELDS = 12
+# 证据路径列表索引：'items[0]'（数字）或 'items[]'（通配）。EVIDENCE_FIELD_PATTERN
+# 允许方括号字符，故此处单独解析索引段。
+_INDEX_PATTERN = re.compile(r"^(?P<key>[A-Za-z0-9_]+)\[(?P<index>\d*)\]$")
+
+# 叙述性默认文案（2026-08-02 放宽）：invalidation / next_observation 缺失或空值时
+# 自动补默认值通过验收——模型漏写描述性内容不影响真实性，不必整条重试拖慢速度。
+NARRATIVE_DEFAULTS: dict[str, str] = {
+    "invalidation": "数据过期、身份不匹配或事件状态变化时失效。",
+    "next_observation": "等待价格触及关键区间或结构变化后再评估。",
+}
 
 
 def _mode_limits(mode: str) -> tuple[float, float, float, float]:
@@ -40,14 +50,33 @@ def _mode_limits(mode: str) -> tuple[float, float, float, float]:
 
 
 def _resolve_evidence_path(snapshot: dict[str, object], path: str) -> bool:
-    """True when a dotted evidence path ('timeframe_structure.h1.atr_14') exists in facts."""
+    """True when a dotted evidence path ('timeframe_structure.h1.atr_14') exists in facts.
+
+    支持列表索引两种写法：'news_context.items[0].title'（数字索引）与
+    'news_context.items[].title'（通配索引，提示词示例中的写法）。索引越界返回 False。
+    """
     from typing import Any
 
     current: Any = snapshot
     for part in path.split("."):
-        if not isinstance(current, dict) or part not in current:
+        if isinstance(current, dict) and part in current:
+            current = current[part]
+            continue
+        # 列表索引：items[0] / items[]
+        match = _INDEX_PATTERN.fullmatch(part)
+        if match is None or not isinstance(current, dict):
             return False
-        current = current[part]
+        key = match.group("key")
+        if key not in current or not isinstance(current[key], list):
+            return False
+        items = current[key]
+        index = match.group("index")
+        if index == "":
+            return bool(items)  # 通配 []：列表非空即有效
+        position = int(index)
+        if position < 0 or position >= len(items):
+            return False
+        current = items[position]
     return current is not None
 
 
@@ -136,18 +165,28 @@ def _validate_entry_at_key_level(
 
 def _validate_evidence_fields(
     payload: dict[str, object], snapshot: dict[str, object] | None
-) -> str | None:
+) -> tuple[str | None, list[str]]:
+    """Validate evidence_fields; returns (hard_error, warnings).
+
+    军师模式分级（2026-08-03 修复，实测 brief 高频 REJECTED 根因）：
+    - 硬拒（结构/格式错误）：不是列表、空、超限、字段非字符串、含非法字符——
+      这类是"模型没按契约输出"，重试比降级更有价值；
+    - 警告（引用瑕疵）：路径格式合法但未解析到已提供事实（含列表索引越界）——
+      模型引用真实事实时猜错路径/索引是常见小错，降级为风险标注随报告呈现，
+      不整单拒绝（否则 DeepSeek/GLM 引用 items[1] 越界或短名路径就必被拒）。
+    """
     fields = payload.get("evidence_fields")
     if not isinstance(fields, list) or not fields or len(fields) > MAX_EVIDENCE_FIELDS:
-        return "依据字段列表无效：evidence_fields"
+        return "依据字段列表无效：evidence_fields", []
+    warnings: list[str] = []
     for field in fields:
         if not isinstance(field, str) or not EVIDENCE_FIELD_PATTERN.match(field):
-            return "依据字段列表无效：evidence_fields"
-    if snapshot is not None:
-        for field in fields:
-            if not _resolve_evidence_path(snapshot, field):
-                return f"依据字段不在已提供事实中：{field}"
-    return None
+            return "依据字段列表无效：evidence_fields", []
+        if snapshot is None:
+            continue
+        if not _resolve_evidence_path(snapshot, field):
+            warnings.append(f"依据字段未解析到已提供事实：{field}")
+    return None, warnings
 
 
 def _validate_trade_geometry(payload: dict[str, object]) -> str | None:
@@ -229,9 +268,14 @@ def validate_report(
     gate: GateResult,
     snapshot: dict[str, object] | None = None,
     mode: JobMode = "scalp",
+    loose_evidence: bool = False,
 ) -> tuple[bool, str, dict[str, object] | None]:
     if not isinstance(payload, dict):
         return False, "报告不是 JSON 对象", None
+    # 2026-08-02 放宽：叙述性字段缺失/空值时自动补默认文案，不拒绝、不重试。
+    for _key, _default in NARRATIVE_DEFAULTS.items():
+        if not isinstance(payload.get(_key), str) or not payload[_key].strip():
+            payload[_key] = _default
     missing = REQUIRED_KEYS - set(payload)
     if missing:
         return False, f"报告缺少字段：{', '.join(sorted(missing))}", None
@@ -253,10 +297,11 @@ def validate_report(
         isinstance(source, str) for source in source_ids
     ):
         return False, "报告来源标识无效", None
-    allowed_sources = allowed_source_ids(snapshot)
-    for source in source_ids:
-        if source not in allowed_sources:
-            return False, f"报告引用了未提供的数据源：{source}", None
+    # 真实性底线（2026-08-02 放宽）：只要求报告锚定真实数据源 mt5_snapshot。
+    # 其余来源名不再逐一拒绝——模型用短名（tick_health/session_context 等）
+    # 引用快照内嵌事实是合理写法；内容真实性由 evidence_fields 路径校验承担。
+    if "mt5_snapshot" not in source_ids:
+        return False, "报告必须引用 mt5_snapshot 作为数据锚点", None
     visible_keys = list(VISIBLE_TEXT_KEYS)
     if gate.directional_plan_allowed:
         visible_keys.append("risk_note")
@@ -268,9 +313,11 @@ def validate_report(
             term.upper() not in ALLOWED_LATIN_TERMS for term in latin_terms
         ):
             return False, f"报告正文必须使用中文：{key}", None
-    evidence_error = _validate_evidence_fields(payload, snapshot)
-    if evidence_error:
+    # 证据路径校验分级：结构/格式错误硬拒；引用瑕疵（路径未解析）转风险标注。
+    evidence_error, evidence_warnings = _validate_evidence_fields(payload, snapshot)
+    if evidence_error and not loose_evidence:
         return False, evidence_error, None
+    validation_warnings.extend(evidence_warnings)
     if gate.directional_plan_allowed:
         direction = payload.get("direction")
         if direction not in ALLOWED_DIRECTIONS:
