@@ -362,10 +362,15 @@ def validate_report(
         if not isinstance(payload.get(key), str) or not payload[key].strip():
             return False, f"报告字段无效：{key}", None
         latin_terms = re.findall(r"\b[A-Za-z][A-Za-z0-9]*\b", payload[key])
-        if not re.search(r"[一-鿿]", payload[key]) or any(
-            term.upper() not in ALLOWED_LATIN_TERMS for term in latin_terms
-        ):
+        # 中文正文是真实性底线，保留硬约束（防模型输出全英文）。
+        if not re.search(r"[一-鿿]", payload[key]):
             return False, f"报告正文必须使用中文：{key}", None
+        # 白名单外英文词（2026-08-03 余量）：从硬拒改为风险标注——模型偶发引入
+        # 合法宏观缩写（ISM/PMI/UTC 等）或个别普通词，不应整单拒绝（实测 3 次
+        # REJECTED 根因）。如实标注，让交易者拿到简报自己判断。
+        unknown = [term for term in latin_terms if term.upper() not in ALLOWED_LATIN_TERMS]
+        if unknown:
+            validation_warnings.append(f"{key} 含白名单外英文词：{', '.join(sorted(set(unknown)))}，建议用中文表述")
     # 证据路径校验分级：结构/格式错误硬拒；引用瑕疵（路径未解析）转风险标注。
     evidence_error, evidence_warnings = _validate_evidence_fields(payload, snapshot)
     if evidence_error and not loose_evidence:
