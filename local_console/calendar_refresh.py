@@ -8,7 +8,7 @@ import time
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import urlparse
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 from .calendar_parsers import CALENDAR_SCHEMA_VERSION, parse_calendar_payload
 from .config import ConsoleConfig
@@ -24,11 +24,15 @@ CALENDAR_MAX_BYTES = 2 * 1024 * 1024
 CALENDAR_URL_ENV = "XAU_CONSOLE_CALENDAR_URL"
 # 免费公开周历（ForexFactory/faireconomy），仅取 USD 事件。
 # 2026-08-03 修复：cdn-nfs 在本网络 TLS 握手即被掐断（SSL EOF），
-# nfs（同源同内容，无 cdn- 前缀）可正常访问——主源失败时按序回退备用源，
-# 避免事件日历层整体失效（此前 calendar.json 从未写入，所有任务都带"未核验"标注）。
+# nfs（同源同内容，无 cdn- 前缀）可正常访问但会 429 限流（200/429 抖动）——
+# 主源失败时按序回退备用源，避免事件日历层整体失效（此前 calendar.json
+# 从未写入，所有任务都带"未核验"标注）。
+# 2026-08-03 新增稳定备用源 finviz（calendar.ashx）：实测本网络 6/6 请求 200、
+# 服务端渲染内嵌 JSON、含 importance 等级、无 API key，作为 nfs 限流时的兜底。
 DEFAULT_CALENDAR_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.xml"
 CALENDAR_FALLBACK_URLS = (
     "https://cdn-nfs.faireconomy.media/ff_calendar_thisweek.xml",
+    "https://finviz.com/calendar.ashx",
 )
 
 # 进程内最后一次全源失败时刻（monotonic，None = 无失败记录）；源故障时退避，避免每次任务重试。
@@ -36,6 +40,11 @@ CALENDAR_FALLBACK_URLS = (
 # 开机 < 退避窗口时 `monotonic() - 0.0 < window` 恒成立，退避必然误触发，
 # calendar.json 永不写入（2026-08-03 复审发现：系统开机 19 分钟时被测试抓到）。
 _last_fetch_failure_at: float | None = None
+
+# 日历源请求头：裸 urlopen（无 UA）会被多数源拒绝——finviz 403、nfs 429（2026-08-03
+# 实测：带 UA 两者均 200；裸请求 finviz 403 / nfs 429）。这是日历层自 7/31 起
+# 拉取失败的隐藏根因之一，此前从未被怀疑。
+_CALENDAR_REQUEST_HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) XAU-Console/1.8.0"}
 
 
 def refresh_calendar_from_url(config: ConsoleConfig) -> bool:
@@ -68,12 +77,13 @@ def refresh_calendar_from_url(config: ConsoleConfig) -> bool:
         pass  # 文件不存在 → 立即拉取
     for url in candidates:
         try:
-            with urlopen(url, timeout=FETCH_TIMEOUT_SECONDS) as response:
+            request = Request(url, headers=_CALENDAR_REQUEST_HEADERS)
+            with urlopen(request, timeout=FETCH_TIMEOUT_SECONDS) as response:
                 text = response.read(CALENDAR_MAX_BYTES + 1).decode("utf-8", errors="replace")
             if len(text) > CALENDAR_MAX_BYTES:
                 continue  # 响应超过上限，尝试下一个源
         except OSError:
-            continue  # 当前源不可达（如 TLS 被掐断），尝试下一个源
+            continue  # 当前源不可达（如 TLS 被掐断/403/429），尝试下一个源
         events = parse_calendar_payload(text)
         if events is None:
             continue  # 格式无法识别（非 JSON/ICS/FF-XML），尝试下一个源

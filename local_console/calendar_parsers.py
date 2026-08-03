@@ -1,4 +1,4 @@
-"""Event-calendar source parsing: JSON / ForexFactory XML / ICS → normalized events."""
+"""Event-calendar source parsing: JSON / ForexFactory XML / ICS / Finviz → normalized events."""
 
 from __future__ import annotations
 
@@ -22,6 +22,13 @@ HIGH_IMPACT_KEYWORDS = re.compile(
     re.IGNORECASE,
 )
 
+# Finviz 内嵌 JSON blob 起点标记（calendar.ashx 返回 HTML，内嵌 {"initialDateFrom":...,"entries":[...]}）
+FINVIZ_BLOB_START = '{"initialDateFrom"'
+# 只保留 importance >= 2（finviz 1-3 等级；1 为低影响杂项，不值得进闸门日历）
+FINVIZ_MIN_IMPORTANCE = 2
+# 防恶意超长响应：内嵌 JSON 超过该字节即拒绝解析
+FINVIZ_MAX_BLOB_BYTES = 4 * 1024 * 1024
+
 
 def events_from_json(text: str) -> list[dict[str, Any]] | None:
     try:
@@ -31,6 +38,83 @@ def events_from_json(text: str) -> list[dict[str, Any]] | None:
     if not isinstance(payload, dict) or not isinstance(payload.get("events"), list):
         return None
     return [entry for entry in payload["events"] if _valid_event(entry)]
+
+
+def events_from_finviz(text: str) -> list[dict[str, Any]]:
+    """Parse the Finviz economic calendar page (calendar.ashx).
+
+    Finviz 是美国宏观日历：HTML 页面内嵌一个 JSON blob
+    （{"initialDateFrom":..., "entries":[{date, event, importance, ticker, ...}]}），
+    服务端渲染，无需 JS，无 API key，实测稳定（本网络 6/6 请求 200）。
+    从稳定源读取时 parse_calendar_payload 通过 FINVIZ_BLOB_START 识别并转发至此。
+
+    importance 映射：3 → high（对应非农/CPI/FOMC 级别）、2 → medium、
+    1 → low（丢弃）。标题加"美国·"前缀（finviz 即美国宏观日历），
+    时间字段 date 为 ISO 格式（含偏移），由 _parse_instant 统一转 UTC。
+    """
+    start = text.find(FINVIZ_BLOB_START)
+    if start < 0:
+        return []
+    # 括号配对提取完整 JSON（防截断/夹带）
+    depth = 0
+    end = start
+    for i in range(start, min(start + FINVIZ_MAX_BLOB_BYTES, len(text))):
+        char = text[i]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                end = i + 1
+                break
+    if depth != 0:
+        return []  # blob 未闭合（超长或损坏）
+    try:
+        payload = json.loads(text[start:end])
+    except ValueError:
+        return []
+    entries = payload.get("entries") if isinstance(payload, dict) else None
+    if not isinstance(entries, list):
+        return []
+    events: list[dict[str, Any]] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        importance = entry.get("importance")
+        if not isinstance(importance, int) or importance < FINVIZ_MIN_IMPORTANCE:
+            continue
+        title = entry.get("event")
+        if not isinstance(title, str) or not title.strip():
+            continue
+        impact = "high" if importance >= 3 else "medium"
+        instant = _finviz_instant(entry.get("date"))
+        if instant is None:
+            continue
+        events.append(
+            {
+                "title": f"美国·{title.strip()}",
+                "utc": instant.isoformat(),
+                "impact": impact,
+            }
+        )
+    return events
+
+
+def _finviz_instant(value: object) -> datetime | None:
+    """Finviz date 字段（'2026-08-03T10:00:00'）按美国东部时间解释，转 UTC。
+
+    finviz 的 date 是本地时间（无偏移，实际为 ET）；若不解释直接当 UTC，
+    事件时刻会差 4-5 小时（非农 08:30 ET 会被当成 08:30 UTC，整整晚 4 小时）。
+    """
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        local = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if local.tzinfo is not None:
+        return local.astimezone(UTC)  # 若源将来带偏移，直接转
+    return local.replace(tzinfo=US_EASTERN).astimezone(UTC)
 
 
 def events_from_ff_xml(text: str) -> list[dict[str, Any]]:
@@ -131,12 +215,14 @@ def events_from_ics(text: str) -> list[dict[str, Any]]:
 
 
 def parse_calendar_payload(text: str) -> list[dict[str, Any]] | None:
-    """Detect payload format (JSON / ICS / FF XML) and return normalized events."""
+    """Detect payload format (JSON / ICS / FF XML / Finviz) and return normalized events."""
     stripped = text.lstrip()
     if stripped.startswith("{"):
         return events_from_json(text)
     if "BEGIN:VCALENDAR" in text:
         return events_from_ics(text)
+    if FINVIZ_BLOB_START in text:
+        return events_from_finviz(text)
     if stripped.startswith("<"):
         return events_from_ff_xml(text)
     return None

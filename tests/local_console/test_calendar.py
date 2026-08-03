@@ -51,6 +51,94 @@ def pce_event(hours_from_now: float) -> dict[str, object]:
     return {"title": "美国核心 PCE", "utc": instant.isoformat(), "impact": "high"}
 
 
+# Finviz 日历页样本（真实结构：HTML 内嵌 {"initialDateFrom":...,"entries":[...]}）
+def finviz_html_sample() -> str:
+    blob = json.dumps(
+        {
+            "initialDateFrom": "2026-08-03",
+            "entries": [
+                {
+                    "calendarId": 396435,
+                    "ticker": "NAPMPMI",
+                    "event": "ISM Manufacturing PMI",
+                    "category": "Business Confidence",
+                    "date": "2026-08-03T10:00:00",
+                    "actual": None,
+                    "previous": "53.3",
+                    "forecast": "54",
+                    "importance": 3,
+                    "isHigherPositive": 1,
+                },
+                {
+                    "calendarId": 396437,
+                    "ticker": "USAIME",
+                    "event": "ISM Manufacturing Employment",
+                    "category": "ISM Manufacturing Employment",
+                    "date": "2026-08-03T10:00:00",
+                    "actual": None,
+                    "previous": "49.7",
+                    "importance": 2,
+                    "isHigherPositive": 1,
+                },
+                {
+                    "calendarId": 396405,
+                    "ticker": "USOILRIGS",
+                    "event": "Baker Hughes Oil Rig Count",
+                    "category": "Crude Oil Rigs",
+                    "date": "2026-07-31T13:00:00",
+                    "actual": "451",
+                    "previous": "450",
+                    "importance": 1,  # 低影响：应被丢弃
+                    "isHigherPositive": 1,
+                },
+            ],
+        }
+    )
+    return (
+        "<!DOCTYPE html><html><head><title>Economic Calendar</title></head>"
+        "<body><script>window.__CAL__ = " + blob + ";</script></body></html>"
+    )
+
+
+class FinvizParserTests(unittest.TestCase):
+    def test_finviz_blob_parsed_and_importance_mapped(self):
+        events = parse_calendar_payload(finviz_html_sample())
+
+        self.assertIsNotNone(events)
+        # importance 3 → high、2 → medium、1 → 丢弃
+        self.assertEqual(2, len(events))
+        high = [e for e in events if e["impact"] == "high"]
+        medium = [e for e in events if e["impact"] == "medium"]
+        self.assertEqual(1, len(high))
+        self.assertEqual(1, len(medium))
+        self.assertEqual("美国·ISM Manufacturing PMI", high[0]["title"])
+        self.assertEqual("high", high[0]["impact"])
+
+    def test_finviz_dates_are_utc_aware(self):
+        events = parse_calendar_payload(finviz_html_sample())
+        high = [e for e in events if e["impact"] == "high"][0]
+
+        # finviz 时间是 ET 本地无偏移 ISO；解析器应按 US/Eastern 解释再转 UTC
+        parsed = datetime.fromisoformat(high["utc"])
+        self.assertIsNotNone(parsed.utcoffset())
+        # 2026-08-03T10:00:00 ET（夏令时 EDT=UTC-4）→ 2026-08-03T14:00:00Z
+        self.assertEqual(14, parsed.hour)
+        self.assertEqual(2026, parsed.year)
+
+    def test_finviz_malformed_blob_returns_empty(self):
+        html = "<html><body>no calendar data here</body></html>"
+        self.assertEqual([], parse_calendar_payload(html))
+
+    def test_finviz_unclosed_blob_returns_empty(self):
+        html = "<html><body>" + '{"initialDateFrom":"2026-08-03","entries":[{"event":"X"' + "</body></html>"
+        self.assertEqual([], parse_calendar_payload(html))
+
+    def test_finviz_empty_entries_returns_empty_list(self):
+        blob = json.dumps({"initialDateFrom": "2026-08-03", "entries": []})
+        html = "<html><body>" + blob + "</body></html>"
+        self.assertEqual([], parse_calendar_payload(html))
+
+
 class CalendarEvaluationTests(unittest.TestCase):
     def test_missing_calendar_is_unverified(self):
         with tempfile.TemporaryDirectory() as directory:
