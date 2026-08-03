@@ -115,6 +115,42 @@ def _vol_regime_key(record: JobRecord) -> str | None:
     return None
 
 
+def _spread_percentile_key(record: JobRecord) -> str | None:
+    """按点差历史分位分组（2026-08-03 新增）。
+
+    依据：实盘复盘显示点差≥80分位的 33 单胜率仅 12%（-23.3R），
+    点差正常组 46%（+9.9R）——点差是最大负期望来源，需持续监控闸门效果。
+    映射：<0.5 → spread_low；0.5-0.8 → spread_mid；≥0.8 → spread_high。
+    """
+    gate = record.gate
+    if not isinstance(gate, dict):
+        return None
+    tick = gate.get("tick_health")
+    if not isinstance(tick, dict):
+        return None
+    percentile = tick.get("spread_percentile")
+    if not isinstance(percentile, (int, float)):
+        return None
+    if percentile >= 0.8:
+        return "spread_high"
+    if percentile >= 0.5:
+        return "spread_mid"
+    return "spread_low"
+
+
+def _session_key(record: JobRecord) -> str | None:
+    """按交易时段分组（2026-08-03 新增）：监控时段纪律效果。
+
+    快照 session_label 由 session_context 确定性计算；缺失 → None。
+    """
+    snapshot = record.snapshot
+    if isinstance(snapshot, dict):
+        label = snapshot.get("session_label")
+        if isinstance(label, str) and label:
+            return label
+    return None
+
+
 def compute_context_stats(records: list[JobRecord]) -> dict[str, Any]:
     """按交易员关心的单一维度切分复盘结果，回答"我的流程在什么情境下有 edge"。
 
@@ -128,5 +164,7 @@ def compute_context_stats(records: list[JobRecord]) -> dict[str, Any]:
         "by_prompt_version": _grouped_stats(records, _prompt_version_key),
         "by_mode": _grouped_stats(records, _mode_key),
         "by_vol_regime": _grouped_stats(records, _vol_regime_key),
+        "by_spread_percentile": _grouped_stats(records, _spread_percentile_key),
+        "by_session": _grouped_stats(records, _session_key),
         "disclaimer": MEASUREMENT_DISCLAIMER,
     }

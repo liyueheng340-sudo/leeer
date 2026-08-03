@@ -47,7 +47,11 @@ VISIBLE_TEXT_KEYS = ("summary", "invalidation", "next_observation")
 # 1.7.0：A1 交易时段上下文（session_context：时段 label/距伦敦定盘/COMEX 开盘分钟数）
 #       与 A3 点差历史分位（tick_health.spread_percentile）注入 prompt——
 #       位置感增强（外部模型吸收清单改进 1）。
-PROMPT_VERSION = "1.7.0"
+# 1.8.0：顺势回调纪律（2026-08-03 本地回测 + 实盘复盘 + 外部调研）——
+#       scalp 只吃回调不追价：入场必须与共振同向、M5 回调到区间低位/高位
+#       （range_location_8 由已收盘 K 线确定性计算）；TP 快速止盈 1:1.0-1:1.5
+#       （回测 TP=1.0/SL=0.8ATR 胜率 71.3% vs 追价 -0.43R）。
+PROMPT_VERSION = "1.8.0"
 
 # 各模式的纪律参数（report_validation 复用同一张表，保证 prompt 与验收一致）。
 MODE_RULES: dict[str, dict[str, object]] = {
@@ -335,6 +339,33 @@ def build_prompt(
                 + f"。入场区间中点必须贴近其中至少一个关键价位（{mode_tol:g} 倍参考 ATR 内），"
                 "否则报告将被拒绝；支撑位做多、阻力位做空，止损放在关键价位外侧。"
             )
+        # 1.8.0：顺势回调纪律（本地回测：回调入场 52.6% vs 追价 -0.43R）。
+        # range_location_8 由已收盘 K 线确定性计算（0=区间底 1=区间顶），
+        # 直接注入避免模型猜。
+        if mode == "scalp":
+            loc = None
+            structure = snapshot.get("timeframe_structure")
+            if isinstance(structure, dict):
+                frame = structure.get("m5") or structure.get("m15")
+                if isinstance(frame, dict) and isinstance(frame.get("range_location_8"), (int, float)):
+                    loc = float(frame["range_location_8"])
+            pullback_rule = (
+                "顺势回调纪律（scalp）：只吃回调，严禁追价。"
+                "direction 必须与 timeframe_resonance.score 同号（逆势直接违反纪律）；"
+            )
+            if loc is not None:
+                pullback_rule += (
+                    f"当前 M5 区间位置（range_location_8，0=区间底 1=区间顶）为 {loc:.2f}。"
+                    "做多（LONG）必须在区间低位附近（range_location_8 ≤ 0.5 时回调买入），"
+                    "做空（SHORT）必须在区间高位附近（range_location_8 ≥ 0.5 时反弹卖出）；"
+                    "禁止在区间高位追多或区间低位追空（追突破/追价报告将被拒绝）。"
+                )
+            else:
+                pullback_rule += (
+                    "做多等待价格回踩区间低位、做空等待价格反弹到区间高位；"
+                    "禁止追突破/追价（追高追低报告将被拒绝）。"
+                )
+            output_rules.append(pullback_rule)
         mode_rule = (
             f"当前交易模式：{mode_rules['label']}。"
             f"仓位取向：{mode_rules['position']}。"
@@ -344,6 +375,14 @@ def build_prompt(
                 "止盈必须分批表达：risk_note 说明第一目标（至少 1:1.5）与让利润奔跑的条件；"
                 "决策建立在 M15 主图之上并说明 D1/H4 方向过滤结论；"
                 "默认不隔夜，除非趋势极强且 IV 支持。"
+            )
+        else:
+            # 1.8.0：scalp 快速止盈纪律（本地回测 TP=1.0/SL=0.8ATR 胜率 71.3% 最优，
+            # 高胜率小 R 是剥头皮的正确几何，而非大 R 低胜率）。
+            mode_rule += (
+                "止盈纪律：快进快出，TP 目标 1.0-1.5R（止损的 1.0-1.5 倍），"
+                "不做大 R 目标——剥头皮靠高胜率小 R 累积，追大 R 目标会拉低胜率；"
+                "止损 0.8-1.0 倍参考 ATR（紧止损，区间低位/高位外侧）。"
             )
         output_rules.append(mode_rule)
         trade_rule = (

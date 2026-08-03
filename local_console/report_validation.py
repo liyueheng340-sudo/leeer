@@ -165,6 +165,42 @@ def _validate_entry_at_key_level(
     return "入场区间未贴近任何关键价位（前日高低/当日高低/整数关口/最近摆动点）"
 
 
+def _validate_pullback_form(
+    payload: dict[str, object], snapshot: dict[str, object], mode: JobMode = "scalp"
+) -> str | None:
+    """scalp 顺势回调形态校验：入场必须是区间回调位，禁止追价。
+
+    依据（2026-08-03 本地回测）：回调入场 52.6% 胜率 / +0.21R vs 追价 23.1% /
+    −0.43R；且回测全组合（共振+回调+关口）71.3% 胜率。scalp 模式硬校验：
+    - LONG 入场时 M5 range_location_8 不应在区间高位（追高）；
+    - SHORT 入场时不应在区间低位（追低）。
+    range_location_8 由已收盘 K 线确定性计算，非模型推断，可作验收依据。
+    注：共振相悖维持军师模式标注（_validate_resonance_direction），不在此硬拒——
+    方向判断可逆势但必须解释，入场位置纪律（回调不追价）才是硬约束。
+    """
+    if mode != "scalp" or payload.get("direction") == "NEUTRAL":
+        return None
+    direction = payload.get("direction")
+    entry = _parse_prices(payload.get("entry_zone"))
+    if not entry:
+        return None
+    structure = snapshot.get("timeframe_structure")
+    loc = None
+    if isinstance(structure, dict):
+        frame = structure.get("m5") or structure.get("m15")
+        if isinstance(frame, dict) and isinstance(frame.get("range_location_8"), (int, float)):
+            loc = float(frame["range_location_8"])
+    if loc is None:
+        return None  # 缺 range_location 数据时跳过（几何/关键价位校验仍生效）
+    # 追价判定：LONG 在区间高位（loc≥0.65）/ SHORT 在区间低位（loc≤0.35）即追价。
+    # 阈值取 0.65/0.35（回测中 0.4/0.6 为回调过滤边界，验收留一点缓冲避免误杀）。
+    if direction == "LONG" and loc >= 0.65:
+        return f"做多入场在区间高位（range_location_8={loc:.2f}），追高违反回调纪律"
+    if direction == "SHORT" and loc <= 0.35:
+        return f"做空入场在区间低位（range_location_8={loc:.2f}），追低违反回调纪律"
+    return None
+
+
 def _validate_evidence_fields(
     payload: dict[str, object], snapshot: dict[str, object] | None
 ) -> tuple[str | None, list[str]]:
@@ -337,6 +373,10 @@ def validate_report(
             snapshot_error = _validate_against_snapshot(payload, snapshot, mode)
             if snapshot_error:
                 return False, snapshot_error, None
+            # 1.8.0 回调形态硬校验（scalp 追价直接拒绝；共振相悖/震荡市等仍标注）。
+            pullback_error = _validate_pullback_form(payload, snapshot, mode)
+            if pullback_error:
+                return False, pullback_error, None
             for warning in (
                 _validate_resonance_direction(payload, snapshot),
                 _validate_regime_direction(payload, snapshot),

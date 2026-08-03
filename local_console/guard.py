@@ -20,6 +20,10 @@ GateAction = Literal["ANALYSE", "BLOCKED"]
 
 # 点差峰值达到该值（价格单位）即视为异常扩大，写入标注（剥头皮目标 3-5 个点）。
 SPREAD_DOWNGRADE_THRESHOLD = 0.5
+# 点差分位硬闸门阈值：当前点差处于近期历史高位（≥80 分位）时禁方向建议。
+# 依据（2026-08-03 回测+复盘）：实盘 33 单点差≥80分位胜率仅 12%（-23.3R），
+# 点差正常组 46%（+9.9R）；回测证明规则在低点差下才有正期望。
+SPREAD_BLOCK_PERCENTILE = 0.8
 # 共振明确阈值：|score| ≥ 0.5 视为方向证据明确；否则标注"共振不明确"。
 RESONANCE_CLEAR_THRESHOLD = 0.5
 # 黄金剥头皮活跃时段（校正 UTC）：伦敦 / 伦敦纽约重叠 / 纽约午盘。
@@ -47,9 +51,43 @@ def tick_downgrade_reason(tick_health: dict[str, object] | None) -> str | None:
         detail = str(tick_health.get("stall_reason") or "").strip()
         suffix = f"（{detail}）" if detail else ""
         return f"报价流停滞{suffix}"
+    # 点差异常已由 spread_block_reason 硬闸门给出"禁方向"标注，
+    # 此处不再重复报普通警告（避免同一条点差产生两条标注）。
+    if spread_block_reason(tick_health) is not None:
+        return None
+    return None
+
+
+def spread_block_reason(tick_health: dict[str, object] | None) -> str | None:
+    """点差成本硬闸门：点差处于近期历史高位（≥80 分位）或峰值异常 → 禁方向建议。
+
+    依据（2026-08-03 本地回测 + 实盘复盘）：点差≥80分位的 33 单实盘胜率仅 12%
+    （累计 −23.3R），点差正常组 46%（+9.9R）——点差是最大负期望来源。
+    只禁方向建议（directional_plan_allowed=False），分析本身不锁死（军师模式）。
+    """
+    if not isinstance(tick_health, dict) or tick_health.get("available") is not True:
+        return None
+    percentile = tick_health.get("spread_percentile")
+    if isinstance(percentile, (int, float)) and percentile >= SPREAD_BLOCK_PERCENTILE:
+        return f"点差处于近期历史高位（{percentile:.0%} 分位），入场成本过高，禁方向建议"
     spread_max = tick_health.get("spread_max")
     if isinstance(spread_max, (int, float)) and spread_max >= SPREAD_DOWNGRADE_THRESHOLD:
-        return f"点差异常扩大（峰值 {spread_max:.2f}），交易成本偏高"
+        return f"点差异常扩大（峰值 {spread_max:.2f}），入场成本过高，禁方向建议"
+    return None
+
+
+def session_block_reason(snapshot: dict[str, object], mode: str) -> str | None:
+    """scalp 模式亚洲时段禁方向：流动性差、点差宽、方向浅且易反转。
+
+    外部共识（pro-scalper/goldscalpers 等多项目）+ 本地复盘（asia 51 单占大头且
+    全在亏）一致：剥头皮只在伦敦/重叠/纽约午盘做；亚洲时段只观察。
+    swing 模式保留方向（波段可持仓过渡时段）。
+    """
+    if mode != "scalp":
+        return None
+    label = snapshot.get("session_label")
+    if label == "asia":
+        return "亚洲时段流动性不足（剥头皮禁区），禁方向建议，仅观察"
     return None
 
 
@@ -117,6 +155,7 @@ def evaluate_gate(
     ea_status: dict[str, object] | None = None,
     resonance: dict[str, object] | None = None,
     regime: dict[str, object] | None = None,
+    mode: str = "scalp",
 ) -> GateResult:
     if snapshot.get("identity_match") is not True or snapshot.get("symbol") != "XAUUSD":
         return GateResult("BLOCKED", False, False, "MT5 经纪商或品种身份不匹配")
@@ -139,6 +178,17 @@ def evaluate_gate(
         resonance = compute_resonance(snapshot)
     if regime is None:
         regime = compute_market_regime(snapshot)
+    # 入场纪律硬闸门（2026-08-03 升级）：点差高位 / scalp 亚洲时段 → 禁方向。
+    # 分析保留（allow_model=True），只禁方向建议——军师模式不锁死分析，但入场
+    # 成本与时段是实盘负期望的根源（复盘 -23.3R vs +9.9R；回测 71% vs 52%）。
+    directional_allowed = True
+    for block_reason in (
+        spread_block_reason(tick_health),
+        session_block_reason(snapshot, mode),
+    ):
+        if block_reason is not None:
+            directional_allowed = False
+            warnings.append(block_reason)
     # 收集全部风险标注：EA 风控、tick 健康、共振、市场状态、时段流动性。
     for warn in (
         ea_downgrade_reason(ea_status),
@@ -149,11 +199,13 @@ def evaluate_gate(
     ):
         if warn is not None:
             warnings.append(warn)
-    if warnings:
+    if not directional_allowed:
+        reason = f"MT5 快照新鲜；分析可用，入场纪律拦截（{len(warnings)} 条标注）"
+    elif warnings:
         reason = f"MT5 快照新鲜；分析可用，附带 {len(warnings)} 条风险标注"
     else:
         reason = "MT5 快照新鲜且事件状态已核验，无风险标注"
-    return GateResult("ANALYSE", True, True, reason, warnings=tuple(warnings))
+    return GateResult("ANALYSE", True, directional_allowed, reason, warnings=tuple(warnings))
 
 
 def valid_quote(snapshot: dict[str, object]) -> bool:

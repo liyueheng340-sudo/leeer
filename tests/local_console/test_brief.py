@@ -603,9 +603,9 @@ class NewsSourceValidationTests(unittest.TestCase):
         self.assertNotIn("预期差", prompt)
 
     def test_prompt_version_upgraded_for_news(self):
-        # 版本锁：1.6.0 双模式（scalp/swing）+ IV 波动层——模式纪律随任务快照记录，
-        # IV（GLD 期权链）作为波动环境过滤器注入 prompt；方向/点位纪律仍为风险标注。
-        self.assertEqual("1.7.0", PROMPT_VERSION)
+        # 版本锁：1.8.0 顺势回调纪律（scalp 只吃回调不追价、TP 快速止盈 1.0-1.5R、
+        # M5 range_location_8 注入；依据本地回测回调 +0.21R vs 追价 -0.43R）。
+        self.assertEqual("1.8.0", PROMPT_VERSION)
 
     def test_prompt_contains_event_cross_validation_rule(self):
         """verified_clear 状态的 prompt 应包含事件交叉验证规则。"""

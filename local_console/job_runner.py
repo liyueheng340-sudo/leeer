@@ -120,6 +120,7 @@ def run_job(service: object, job_id: str) -> None:
             pass
 
         ea_status = safe_ea_status(service.config, service.ea_status_runner)
+        record = service.store.get(job_id)
         gate, gate_payload, resonance, regime = build_gate_payload(
             snapshot=snapshot,
             tick_health=tick_health,
@@ -128,6 +129,7 @@ def run_job(service: object, job_id: str) -> None:
             news=news,
             event_context=event_context,
             iv_context=iv_context,
+            mode=record.mode,
         )
         log_event(
             service.config.runlog_path,
@@ -140,7 +142,6 @@ def run_job(service: object, job_id: str) -> None:
         if not gate.allow_model:
             service._advance(job_id, "COMPLETE", gate.reason, gate=gate_payload)
             return
-        record = service.store.get(job_id)
         facts = build_facts(
             snapshot,
             macro=macro,

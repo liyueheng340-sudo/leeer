@@ -24,6 +24,7 @@ def build_gate_payload(
     news: dict[str, object],
     event_context: dict[str, object],
     iv_context: dict[str, object] | None = None,
+    mode: str = "scalp",
 ) -> tuple[GateResult, dict[str, object], dict[str, object], dict[str, object]]:
     """Compute gate + resonance + regime once, return (gate, gate_payload, resonance, regime)."""
     resonance = compute_resonance(snapshot)
@@ -36,6 +37,7 @@ def build_gate_payload(
         ea_status,
         resonance=resonance,
         regime=regime,
+        mode=mode,
     )
     gate_payload = {
         **gate.to_dict(),

@@ -118,6 +118,8 @@ class GateTests(unittest.TestCase):
         self.assertTrue(has_warning(result.warnings, "停滞"))
 
     def test_spread_spike_stays_analyse_with_warning(self):
+        # 2026-08-03 升级：点差异常 → 禁方向（directional_plan_allowed=False），
+        # 分析保留（allow_model=True）——军师模式不锁死分析，但入场成本高时不建议方向。
         tick = healthy_tick()
         tick["spread_max"] = SPREAD_DOWNGRADE_THRESHOLD + 0.4
 
@@ -129,7 +131,27 @@ class GateTests(unittest.TestCase):
         )
 
         self.assertEqual("ANALYSE", result.action)
+        self.assertTrue(result.allow_model)
+        self.assertFalse(result.directional_plan_allowed)
         self.assertTrue(has_warning(result.warnings, "点差异常扩大"))
+
+    def test_spread_high_percentile_blocks_direction(self):
+        # 2026-08-03 升级：点差处于近期历史高位（≥80 分位）→ 禁方向。
+        # 依据：实盘 33 单点差≥80分位胜率 12%（-23.3R）vs 正常组 46%（+9.9R）。
+        tick = healthy_tick()
+        tick["spread_percentile"] = 0.9
+
+        result = evaluate_gate(
+            fresh_snapshot(),
+            {"status": "verified_clear"},
+            NOW,
+            tick,
+        )
+
+        self.assertEqual("ANALYSE", result.action)
+        self.assertTrue(result.allow_model)
+        self.assertFalse(result.directional_plan_allowed)
+        self.assertTrue(has_warning(result.warnings, "禁方向建议"))
 
     def test_warnings_accumulate_with_event_wait_and_tick_stall(self):
         # 多条风险同时存在 → 全部进入 warnings，仍不阻断分析
@@ -191,15 +213,32 @@ class EdgeDowngradeTests(unittest.TestCase):
         self.assertNotIn("共振不明确", result.warnings)
 
     def test_inactive_session_stays_analyse_with_warning(self):
+        # 2026-08-03 升级：scalp 模式亚洲时段 → 禁方向（剥头皮禁区）；
+        # swing 模式保留方向（波段可持仓过渡时段）。
         snapshot = fresh_snapshot()
         snapshot["session_label"] = "asia"
 
         result = evaluate_gate(
-            snapshot, {"status": "verified_clear"}, NOW, healthy_tick()
+            snapshot, {"status": "verified_clear"}, NOW, healthy_tick(), mode="scalp"
         )
 
         self.assertEqual("ANALYSE", result.action)
-        self.assertTrue(has_warning(result.warnings, "流动性不足"))
+        self.assertTrue(result.allow_model)
+        self.assertFalse(result.directional_plan_allowed)
+        self.assertTrue(has_warning(result.warnings, "禁方向建议"))
+
+    def test_swing_mode_keeps_direction_in_asia(self):
+        # swing（日内波段）不受亚洲时段禁方向限制：可持仓过渡非活跃时段。
+        snapshot = fresh_snapshot()
+        snapshot["session_label"] = "asia"
+
+        result = evaluate_gate(
+            snapshot, {"status": "verified_clear"}, NOW, healthy_tick(), mode="swing"
+        )
+
+        self.assertEqual("ANALYSE", result.action)
+        self.assertTrue(result.directional_plan_allowed)
+        self.assertTrue(has_warning(result.warnings, "流动性不足"))  # 仍标注但不禁方向
 
     def test_active_session_keeps_analyse_without_warning(self):
         snapshot = fresh_snapshot()

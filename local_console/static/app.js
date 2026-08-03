@@ -482,6 +482,10 @@ function contextBlockHtml(title, groups, labelMap) {
   </div>`;
 }
 
+/* 点差/时段分组标签（2026-08-03 新增：监控点差闸门与时段纪律效果） */
+const SPREAD_LABELS = { spread_low: "点差低位", spread_mid: "点差中位", spread_high: "点差高位" };
+const SESSION_LABELS = { asia: "亚洲", london: "伦敦", london_ny_overlap: "伦纽重叠", ny_late: "纽约午盘" };
+
 function renderContextStats(contexts) {
   const el = byId("review-contexts");
   if (!el) return;
@@ -492,6 +496,8 @@ function renderContextStats(contexts) {
     contextBlockHtml("按方向", contexts.by_direction, DIRECTION_LABELS),
     contextBlockHtml("按模式", contexts.by_mode, MODE_LABELS),
     contextBlockHtml("波动环境", contexts.by_vol_regime, VOL_REGIME_LABELS),
+    contextBlockHtml("按点差", contexts.by_spread_percentile, SPREAD_LABELS),
+    contextBlockHtml("按时段", contexts.by_session, SESSION_LABELS),
   ].join("");
   el.innerHTML = html || '<p class="empty-state">情境样本积累中。</p>';
 }
