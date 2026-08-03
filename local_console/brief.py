@@ -71,12 +71,25 @@ def request_brief(
     model = config.deep_model if is_deep else config.quick_model
     timeout = DEEP_MODEL_TIMEOUT_SECONDS if is_deep else MODEL_TIMEOUT_SECONDS
     max_retries = DEEP_MODEL_MAX_RETRIES if is_deep else MODEL_MAX_RETRIES
-    llm = create_llm_client(
-        "qwen", model, config.backend_url, timeout=timeout, max_retries=0
-    ).get_llm()
-    return _invoke_with_retry(
-        llm.invoke, build_prompt(snapshot, gate, kind, mode), max_retries
-    )
+    prompt = build_prompt(snapshot, gate, kind, mode)
+    try:
+        llm = create_llm_client(
+            "qwen", model, config.backend_url, timeout=timeout, max_retries=0
+        ).get_llm()
+        return _invoke_with_retry(llm.invoke, prompt, max_retries)
+    except Exception as primary_error:
+        # 双 key 冗余（2026-08-03）：主端点失败/额度耗尽时切到备用端点重试一次。
+        # 阿里云双区独立计费——主套餐耗尽备用仍可用，避免"简报要点几次才出来"。
+        if config.fallback_backend_url and config.fallback_api_key:
+            try:
+                fallback_llm = create_llm_client(
+                    "openai_compatible", model, config.fallback_backend_url,
+                    api_key=config.fallback_api_key, timeout=timeout, max_retries=0,
+                ).get_llm()
+                return _invoke_with_retry(fallback_llm.invoke, prompt, max_retries)
+            except Exception:
+                pass  # 备用也失败：抛原始主端点错误，便于诊断
+        raise RuntimeError(f"Qwen 分析多次重试仍失败") from primary_error
 
 
 def _parse_model_json(content: str) -> object:

@@ -158,6 +158,67 @@ class BriefRequestTests(unittest.TestCase):
         # 推理模型显著更慢，深度复盘超时必须宽于快评。
         self.assertGreater(DEEP_MODEL_TIMEOUT_SECONDS, MODEL_TIMEOUT_SECONDS)
 
+    def test_fallback_endpoint_used_when_primary_fails(self):
+        # 2026-08-03 双 key 冗余：主端点失败（额度耗尽/网络错误）时切到备用端点。
+        config = ConsoleConfig(
+            repo_root=Path("."),
+            state_dir=Path("runtime"),
+            mt5_python=Path("python.exe"),
+            mt5_snapshot_script=Path("snapshot.py"),
+            backend_url="https://primary.invalid/v1",
+            quick_model="quick",
+            deep_model="deep",
+            fallback_backend_url="https://fallback.invalid/v1",
+            fallback_api_key="fallback-key",
+        )
+        ok_content = '{"action":"ANALYSE","source_ids":["mt5_snapshot"],"summary":"中文摘要","invalidation":"中文失效条件","next_observation":"中文观察条件","evidence_fields":["bid"]}'
+
+        def fake_factory(provider, model, base_url, **kwargs):
+            client = MagicMock()
+            llm = MagicMock()
+            if "primary" in (base_url or ""):
+                llm.invoke.side_effect = RuntimeError("主端点额度耗尽")
+            else:
+                llm.invoke.return_value = MagicMock(content=ok_content)
+            client.get_llm.return_value = llm
+            return client
+
+        with patch("local_console.brief.create_llm_client", side_effect=fake_factory) as factory:
+            payload = request_brief(
+                config, "brief", {"symbol": "XAUUSD"}, ANALYSE_GATE
+            )
+
+        self.assertEqual("ANALYSE", payload["action"])
+        # 主端点 + 备用端点各调用一次
+        self.assertEqual(2, factory.call_count)
+        fallback_call = factory.call_args_list[1]
+        self.assertEqual("openai_compatible", fallback_call.args[0])
+        self.assertEqual("https://fallback.invalid/v1", fallback_call.args[2])
+        self.assertEqual("fallback-key", fallback_call.kwargs["api_key"])
+
+    def test_no_fallback_raises_primary_error(self):
+        # 未配置备用端点时，主端点失败直接抛错（保持原行为）。
+        config = ConsoleConfig(
+            repo_root=Path("."),
+            state_dir=Path("runtime"),
+            mt5_python=Path("python.exe"),
+            mt5_snapshot_script=Path("snapshot.py"),
+            backend_url="https://primary.invalid/v1",
+            quick_model="quick",
+            deep_model="deep",
+        )
+
+        def fake_factory(provider, model, base_url, **kwargs):
+            client = MagicMock()
+            llm = MagicMock()
+            llm.invoke.side_effect = RuntimeError("主端点挂了")
+            client.get_llm.return_value = llm
+            return client
+
+        with patch("local_console.brief.create_llm_client", side_effect=fake_factory):
+            with self.assertRaises(RuntimeError):
+                request_brief(config, "brief", {"symbol": "XAUUSD"}, ANALYSE_GATE)
+
 
 class InvokeWithRetryTests(unittest.TestCase):
     def test_transient_failure_is_retried_then_succeeds(self):

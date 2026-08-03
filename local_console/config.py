@@ -27,6 +27,11 @@ class ConsoleConfig:
     backend_url: str | None
     quick_model: str
     deep_model: str
+    # 备用 LLM 端点（2026-08-03 双 key 冗余）：主端点失败/额度耗尽时切到备用。
+    # 阿里云双区（国内 cn-beijing / 国际 ap-southeast-1）各持独立 token 套餐，
+    # 一个套餐耗尽另一个仍可用。None = 不启用 fallback。
+    fallback_backend_url: str | None = None
+    fallback_api_key: str | None = None
     host: str = "127.0.0.1"
     port: int = 8767
     # 自主调度：默认关闭（保守取向，由交易员显式开启）；开启后按固定节奏采样，
@@ -54,6 +59,9 @@ class ConsoleConfig:
             backend_url=os.environ.get("TRADINGAGENTS_LLM_BACKEND_URL"),
             quick_model=os.environ.get("TRADINGAGENTS_QUICK_THINK_LLM", "qwen3.7-max"),
             deep_model=os.environ.get("TRADINGAGENTS_DEEP_THINK_LLM", "qwen3.8-max-preview"),
+            # 备用端点：国际版 ap-southeast-1 套餐（与主端点国内版独立计费）
+            fallback_backend_url=os.environ.get("XAU_CONSOLE_FALLBACK_BACKEND_URL"),
+            fallback_api_key=os.environ.get("XAU_CONSOLE_FALLBACK_API_KEY"),
             auto_interval_seconds=int(os.environ.get("XAU_CONSOLE_AUTO_INTERVAL_SECONDS", "900")),
             auto_enabled_default=os.environ.get("XAU_CONSOLE_AUTO_ENABLED", "").strip().lower()
             in ("1", "true", "yes", "on"),
