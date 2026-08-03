@@ -415,7 +415,7 @@ def build_prompt(
         "allowed_sources": allowed_sources,
         "facts": snapshot,
         "required_json_keys": required_keys,
-        "evidence_fields_schema": "结论依据的 facts 字段路径列表，1-12 个字符串，如 ['bid', 'timeframe_structure.h1.atr_14']",
+        "evidence_fields_schema": "结论依据的 facts 字段路径列表，1-20 个字符串，如 ['bid', 'timeframe_structure.h1.atr_14']",
         "output_rules": output_rules,
     }
     if trade_plan_schema:

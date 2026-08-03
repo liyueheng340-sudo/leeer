@@ -451,6 +451,38 @@ class BriefValidationTests(unittest.TestCase):
         self.assertEqual("依据字段列表无效：evidence_fields", reason)
         self.assertIsNone(report)
 
+    def test_evidence_fields_up_to_20_accepted(self):
+        # 2026-08-03 修复：模型按 facts_paths 清单引用真实字段常达 15 个，
+        # 12 上限过严会拒掉全合法报告（brief 高频 REJECTED 根因），放宽到 20。
+        snapshot = analyse_snapshot()
+        snapshot["timeframe_structure"] = {
+            "m5": {"atr_14": 2.0, "adx_14": 20.0, "rsi_14": 50.0},
+            "m15": {"atr_14": 5.0, "adx_14": 20.0, "rsi_14": 50.0},
+            "h1": {"atr_14": 14.0, "adx_14": 20.0, "rsi_14": 50.0},
+            "h4": {"atr_14": 36.0, "adx_14": 20.0, "rsi_14": 50.0},
+        }
+        snapshot["latest_closed_bars"] = {
+            "m15": {"close": 4065.0}, "h1": {"close": 4065.0}, "h4": {"close": 4057.0},
+        }
+        snapshot["tick_health"] = {"available": True, "spread_percentile": 0.5}
+        snapshot["session_context"] = {"status": "ok", "label": "london"}
+        payload = analyse_payload()
+        payload["evidence_fields"] = [
+            "bid", "ask", "spread",
+            "latest_closed_bars.m15.close", "latest_closed_bars.h1.close",
+            "latest_closed_bars.h4.close",
+            "timeframe_structure.m5.atr_14", "timeframe_structure.m15.atr_14",
+            "timeframe_structure.h1.adx_14", "timeframe_structure.h4.adx_14",
+            "timeframe_structure.m15.rsi_14", "timeframe_structure.h1.rsi_14",
+            "timeframe_resonance.score", "market_regime.regime",
+            "tick_health.spread_percentile", "session_context.label",
+        ]  # 16 个合法字段
+
+        accepted, reason, report = validate_report(payload, ANALYSE_GATE, snapshot)
+
+        self.assertTrue(accepted, reason)
+        self.assertEqual("报告已验收", reason)
+
     def test_evidence_fields_are_required(self):
         payload = analyse_payload()
         del payload["evidence_fields"]

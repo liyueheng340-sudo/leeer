@@ -25,7 +25,9 @@ from .snapshot_facts import _key_levels, _parse_prices, _reference_atr
 
 # 证据路径格式：字母数字下划线点，加上列表索引 'items[0]' / 'items[]'。
 EVIDENCE_FIELD_PATTERN = re.compile(r"^[A-Za-z0-9_.\[\]]+$")
-MAX_EVIDENCE_FIELDS = 12
+# 证据字段上限：模型按 facts_paths 清单引用真实字段，实测常达 15 个；
+# 12 过严会拒绝全合法的报告（2026-08-03 高频 REJECTED 根因），放宽到 20 仍防滥用。
+MAX_EVIDENCE_FIELDS = 20
 # 证据路径列表索引：'items[0]'（数字）或 'items[]'（通配）。EVIDENCE_FIELD_PATTERN
 # 允许方括号字符，故此处单独解析索引段。
 _INDEX_PATTERN = re.compile(r"^(?P<key>[A-Za-z0-9_]+)\[(?P<index>\d*)\]$")
