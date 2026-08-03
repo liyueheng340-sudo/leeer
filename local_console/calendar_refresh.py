@@ -31,8 +31,11 @@ CALENDAR_FALLBACK_URLS = (
     "https://cdn-nfs.faireconomy.media/ff_calendar_thisweek.xml",
 )
 
-# 进程内最后一次全源失败时刻（monotonic，0 = 无失败记录）；源故障时退避，避免每次任务重试。
-_last_fetch_failure_at: float = 0.0
+# 进程内最后一次全源失败时刻（monotonic，None = 无失败记录）；源故障时退避，避免每次任务重试。
+# 不得用 0.0 作"无失败"哨兵：Windows 上 time.monotonic() 是系统开机时长，
+# 开机 < 退避窗口时 `monotonic() - 0.0 < window` 恒成立，退避必然误触发，
+# calendar.json 永不写入（2026-08-03 复审发现：系统开机 19 分钟时被测试抓到）。
+_last_fetch_failure_at: float | None = None
 
 
 def refresh_calendar_from_url(config: ConsoleConfig) -> bool:
@@ -52,7 +55,10 @@ def refresh_calendar_from_url(config: ConsoleConfig) -> bool:
     if not candidates:
         return False
     # 全源失败退避：源故障/限流时不随任务反复锤源。
-    if time.monotonic() - _last_fetch_failure_at < FETCH_FAILURE_BACKOFF_SECONDS:
+    if (
+        _last_fetch_failure_at is not None
+        and time.monotonic() - _last_fetch_failure_at < FETCH_FAILURE_BACKOFF_SECONDS
+    ):
         return False
     try:
         mtime = datetime.fromtimestamp(config.calendar_path.stat().st_mtime, UTC)
@@ -89,7 +95,7 @@ def refresh_calendar_from_url(config: ConsoleConfig) -> bool:
             )
         except OSError:
             return False
-        _last_fetch_failure_at = 0.0  # 成功即清除失败标记
+        _last_fetch_failure_at = None  # 成功即清除失败标记
         return True
     _last_fetch_failure_at = time.monotonic()  # 全源失败：记录退避起点
     return False
