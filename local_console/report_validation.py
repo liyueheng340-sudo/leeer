@@ -168,15 +168,13 @@ def _validate_entry_at_key_level(
 def _validate_pullback_form(
     payload: dict[str, object], snapshot: dict[str, object], mode: JobMode = "scalp"
 ) -> str | None:
-    """scalp 顺势回调形态校验：入场必须是区间回调位，禁止追价。
+    """scalp 顺势回调形态校验：入场在区间回调位为佳，追价降级为风险标注。
 
     依据（2026-08-03 本地回测）：回调入场 52.6% 胜率 / +0.21R vs 追价 23.1% /
-    −0.43R；且回测全组合（共振+回调+关口）71.3% 胜率。scalp 模式硬校验：
-    - LONG 入场时 M5 range_location_8 不应在区间高位（追高）；
-    - SHORT 入场时不应在区间低位（追低）。
-    range_location_8 由已收盘 K 线确定性计算，非模型推断，可作验收依据。
-    注：共振相悖维持军师模式标注（_validate_resonance_direction），不在此硬拒——
-    方向判断可逆势但必须解释，入场位置纪律（回调不追价）才是硬约束。
+    −0.43R。但 2026-08-03 用户反馈"简报经常要点几次才出来"——追价硬拒把
+    "低质量建议"变成"无建议"，交易者连简报都拿不到。修正为军师模式：
+    **追价降级为 validation_warnings 随报告呈现**（低质量如实标注，不阻断简报），
+    与共振相悖/震荡市强方向等纪律标注同层。回测信号仍通过 prompt 纪律传达。
     """
     if mode != "scalp" or payload.get("direction") == "NEUTRAL":
         return None
@@ -195,9 +193,9 @@ def _validate_pullback_form(
     # 追价判定：LONG 在区间高位（loc≥0.65）/ SHORT 在区间低位（loc≤0.35）即追价。
     # 阈值取 0.65/0.35（回测中 0.4/0.6 为回调过滤边界，验收留一点缓冲避免误杀）。
     if direction == "LONG" and loc >= 0.65:
-        return f"做多入场在区间高位（range_location_8={loc:.2f}），追高违反回调纪律"
+        return f"做多入场在区间高位（range_location_8={loc:.2f}），追高胜率偏低（回调纪律）"
     if direction == "SHORT" and loc <= 0.35:
-        return f"做空入场在区间低位（range_location_8={loc:.2f}），追低违反回调纪律"
+        return f"做空入场在区间低位（range_location_8={loc:.2f}），追低胜率偏低（回调纪律）"
     return None
 
 
@@ -373,10 +371,12 @@ def validate_report(
             snapshot_error = _validate_against_snapshot(payload, snapshot, mode)
             if snapshot_error:
                 return False, snapshot_error, None
-            # 1.8.0 回调形态硬校验（scalp 追价直接拒绝；共振相悖/震荡市等仍标注）。
-            pullback_error = _validate_pullback_form(payload, snapshot, mode)
-            if pullback_error:
-                return False, pullback_error, None
+            # 追价形态纪律（1.8.0）：scalp 追高/追低降级为风险标注，不拒绝报告
+            # （2026-08-03 用户反馈"简报经常要点几次才出来"——硬拒把低质量建议
+            # 变成无建议；军师模式如实标注，让交易者拿到简报自己判断）。
+            pullback_warning = _validate_pullback_form(payload, snapshot, mode)
+            if pullback_warning:
+                validation_warnings.append(pullback_warning)
             for warning in (
                 _validate_resonance_direction(payload, snapshot),
                 _validate_regime_direction(payload, snapshot),

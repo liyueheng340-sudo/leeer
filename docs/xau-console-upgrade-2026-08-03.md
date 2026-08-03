@@ -90,8 +90,9 @@
 
 ### 第 3 层：验收（report_validation.py）——形态校验
 
-1. `direction` 与共振 score 相悖 → 维持标注（已实现），但回调形态改为硬校验：
-   LONG 入场时 `range_location_8 > 0.65`（追高）→ REJECT；SHORT 反之（追低）。
+1. `direction` 与共振 score 相悖 → 维持标注；回调形态（追价）→ 附加 validation_warnings
+   （2026-08-03 余量修正：由 REJECT 改标注——LONG 入场 `range_location_8 > 0.65`（追高）
+   如实标注"胜率偏低"，不整单拒绝，简报始终可产出）。
 2. `spread_percentile`/`session` 已在 gate 层禁方向，验收层无需重复，但把 gate 的
    "禁方向"原因写入报告（WATCH 而非 ANALYSE），前端如实呈现。
 

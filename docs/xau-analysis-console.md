@@ -32,9 +32,10 @@ D:\XAU\TradingAgents\.venv\Scripts\python.exe D:\XAU\TradingAgents\scripts\run_x
   模型照常运行、报告照常产出、拦截原因随 `gate.warnings` 呈现，禁止静默拦截。
 - `BLOCKED`：唯一保底——第一手数据不可用（快照过期/报价无效/身份不匹配）。此时模型不运行。
   入场纪律不得新增任何 BLOCKED 路径（第九条第 5 款）。
-- `REJECTED`：模型报告违反真实性约束或追价形态纪律（引用未提供数据的硬约束、
-  几何/幅度越界、非中文、scalp 追高追低）。方向纪律**标注**类（共振相悖、震荡市强方向、
-  入场不贴关键价位）不拒绝，经 `report.validation_warnings` 随报告呈现。
+- `REJECTED`：模型报告违反真实性约束（引用未提供数据的硬约束、
+  几何/幅度越界、非中文）。方向纪律**标注**类（共振相悖、震荡市强方向、
+  入场不贴关键价位、scalp 追高追低）不拒绝，经 `report.validation_warnings` 随报告呈现
+  （2026-08-03 余量修正：追价由硬拒改标注——低质量建议如实呈现，简报始终可产出）。
 - 旧 `WATCH`/`WAIT` 门态已废除：事件未核验/事件窗口只产生标注，不再禁模型。
 
 控制台只调用已有的只读 MT5 行情快照脚本。它没有下单、仓位、平仓、止损止盈、账户设置或 MT5 配置入口。
@@ -94,9 +95,10 @@ D:\XAU\TradingAgents\.venv\Scripts\python.exe D:\XAU\TradingAgents\scripts\run_x
   - entry_zone / take_profit / stop_loss 必须可解析为价格；
   - 几何约束：多头止盈高于入场中点、止损低于入场中点（空头对称）；
   - 幅度约束（快照含 bid 与 ATR 时）：入场中点偏离 bid ≤ 3×ATR，止盈距离 ≤ 5×ATR，止损距离 ≤ 3×ATR。
-- 追价形态纪律（scalp，硬约束，宪法第九条第 2 款）：LONG 入场位于 M5 区间高位
-  （range_location_8 ≥ 0.65）/ SHORT 位于低位（≤ 0.35）→ REJECTED 重跑
+- 追价形态纪律（scalp，标注不拒绝，宪法第九条第 2 款）：LONG 入场位于 M5 区间高位
+  （range_location_8 ≥ 0.65）/ SHORT 位于低位（≤ 0.35）→ 附加 validation_warnings
   （证据：追价 23.1% 胜率 / −0.43R vs 回调 52.6% / +0.21R）。共振相悖维持标注不硬拒。
+  2026-08-03 余量修正：追价由硬拒改为标注——低质量建议如实呈现，简报始终可产出。
 - 方向建议（入场纪律双子态）：`directional_plan_allowed=true` 时所有门态（除 BLOCKED）
   都要求输出完整方向计划；`=false` 时（点差高位/scalp 亚洲时段）只出观察与等待条件。
   gate.warnings 注入 prompt 并要求 risk_note 逐条覆盖；验收时 `report.gate_warnings`

@@ -687,6 +687,37 @@ class EdgeDisciplineValidationTests(unittest.TestCase):
 
         self.assertTrue(accepted)  # |score|<0.5 不构成强制方向
 
+    def test_scalp_chase_high_downgraded_to_warning(self):
+        # 2026-08-03 余量修正：追价从硬拒降级为 validation_warnings——
+        # 低质量建议如实标注，不整单拒绝（用户反馈"简报经常要点几次才出来"）。
+        snapshot = analyse_snapshot()
+        snapshot["timeframe_structure"] = {
+            "m5": {"atr_14": 20.0, "range_location_8": 0.8},  # 区间高位
+        }
+        payload = analyse_payload()  # LONG 在区间高位 = 追高
+
+        accepted, reason, report = validate_report(payload, ANALYSE_GATE, snapshot)
+
+        self.assertTrue(accepted)
+        self.assertEqual("报告已验收", reason)
+        self.assertTrue(has_validation_warning(report, "追高胜率偏低"))
+
+    def test_scalp_chase_low_downgraded_to_warning(self):
+        snapshot = analyse_snapshot()
+        snapshot["timeframe_structure"] = {
+            "m5": {"atr_14": 20.0, "range_location_8": 0.2},  # 区间低位
+        }
+        payload = analyse_payload()
+        payload["direction"] = "SHORT"
+        payload["take_profit"] = "3985"
+        payload["stop_loss"] = "4015"
+
+        accepted, reason, report = validate_report(payload, ANALYSE_GATE, snapshot)
+
+        self.assertTrue(accepted)
+        self.assertEqual("报告已验收", reason)
+        self.assertTrue(has_validation_warning(report, "追低胜率偏低"))
+
     def test_entry_far_from_key_level_accepted_with_warning(self):
         snapshot = analyse_snapshot()
         snapshot["latest_closed_bars"] = {"h1": {"high": 3990.0, "low": 3970.0}}

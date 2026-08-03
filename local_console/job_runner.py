@@ -222,11 +222,12 @@ def run_job(service: object, job_id: str) -> None:
                 service._advance(job_id, "REJECTED", f"共识报告校验失败：{reason}", debate=debate_result)
         else:
             # 快评：DeepSeek 等模型偶发漏字段（summary/source_ids 等），
-            # 验收失败时重试一次自愈（此前仅对异常重试，验收失败不重试）。
+            # 验收失败时重试自愈（2026-08-03 余量：2 次重试 = 最多 3 次尝试，
+            # 实测偶发坏 JSON/漏字段，重试一次不够，用户经常要手动点第二次）。
             accepted = False
             reason = ""
             report = None
-            for attempt in range(2):
+            for attempt in range(3):
                 payload = service.brief_runner(service.config, record.kind, facts, gate, record.mode)
                 service._advance(job_id, "VALIDATE", "正在校验报告来源、数值与证据链")
                 accepted, reason, report = validate_report(payload, gate, facts, record.mode)
@@ -235,7 +236,7 @@ def run_job(service: object, job_id: str) -> None:
                 # 校验未过：原始模型输出落盘，供事后诊断 REJECTED 根因
                 # （审计发现：此前只留一句原因，模型到底输出了什么完全黑盒）。
                 _persist_rejected_payload(service.config, job_id, attempt, reason, payload)
-                if attempt == 0:
+                if attempt < 2:
                     service._advance(job_id, "MODEL", "报告校验未过，重新生成一次", gate=gate_payload)
             service._advance(job_id, "COMPLETE" if accepted else "REJECTED", reason, report=report)
         # 任务收尾后补跑到期复盘（含本次之后到期的历史建议）
