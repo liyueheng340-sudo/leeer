@@ -123,6 +123,25 @@ class ConsoleService:
             target=self._scheduler_loop, name="xau-scheduler", daemon=True
         )
         self._scheduler_thread.start()
+        # 2026-08-04 审查修复：运行中长任务（辩论）的 abort 事件注册表。
+        # close() 广播 set 让 run_debate 轮间检查提前返回，配合 wait=True
+        # 保证 shutdown 快速完成（既避免生产 Ctrl+C 卡死，也保持测试确定性）。
+        self._abort_events: set[Event] = set()
+        self._abort_lock = Lock()
+
+    def register_abort(self, event: Event) -> None:
+        """注册运行中任务的中止事件（job_runner 辩论心跳失败时创建）。"""
+        with self._abort_lock:
+            self._abort_events.add(event)
+
+    def unregister_abort(self, event: Event) -> None:
+        with self._abort_lock:
+            self._abort_events.discard(event)
+
+    def _broadcast_abort(self) -> None:
+        with self._abort_lock:
+            for event in self._abort_events:
+                event.set()
 
     def start(self, kind: JobKind) -> JobRecord:
         with self._start_lock:
@@ -242,7 +261,19 @@ class ConsoleService:
         self._scheduler_thread.join(timeout=5)
         self._housekeeping_stop.set()
         self._housekeeping_thread.join(timeout=5)
-        self.executor.shutdown(wait=True, cancel_futures=False)
+        # 2026-08-04 审查修复（STRUCT）：此前 wait=True + cancel_futures=False 会让
+        # close() 在深度复盘运行时阻塞最多 ~960s（辩论最坏），Ctrl+C 期间进程无法退出。
+        # 修复：1) 广播 abort 让运行中辩论轮间检查提前返回；2) 标记运行中任务 FAILED
+        # （陈旧扫描语义，避免重启后任务卡 MODEL）；3) 再 wait=True 等 worker 收尾。
+        self._broadcast_abort()
+        now = datetime.now(UTC)
+        for record in self.store.list_recent():
+            if record.stage not in TERMINAL_STAGES:
+                try:
+                    self.store.transition(record.id, "FAILED", "服务关闭，任务中断")
+                except (OSError, ValueError):
+                    pass  # 关闭路径尽力而为，失败不阻塞退出
+        self.executor.shutdown(wait=True, cancel_futures=True)
 
     def _fail_stale_jobs_throttled(self, *, force: bool = False) -> None:
         now = time.monotonic()

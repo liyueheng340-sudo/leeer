@@ -147,11 +147,15 @@ def worst_case_seconds(kind: JobKind) -> float:
     每轮最坏 DEBATE_TIMEOUT_SECONDS，**最坏路径含修复轮共 4 轮调用**——
     若只按 3 轮算（720s），陈旧扫描会在辩论中途误杀任务（2026-08-03 实测：
     04:43 单辩论 752 秒被 FAILED，恰好撞上 750s 阈值，任务并未失败）。
+    2026-08-04 审查修复（INCR）：单轮内每家还有 DEBATE_RETRIES 次重试
+    （240 + 2s 退避 + 240），真实单轮最坏 482s——补算重试，避免心跳失效时
+    陈旧阈值低估（真实最坏 ~1928s > 990s 阈值）。
     """
     if kind == "deep_review":
-        from .debate import DEBATE_MAX_ROUNDS, DEBATE_TIMEOUT_SECONDS
+        from .debate import DEBATE_MAX_ROUNDS, DEBATE_RETRIES, DEBATE_TIMEOUT_SECONDS
 
-        # 修复轮 + 最大轮数 = 至多 4 轮调用（第 1 轮 <2 家有效时触发修复轮）。
-        return DEBATE_TIMEOUT_SECONDS * (DEBATE_MAX_ROUNDS + 1)
+        # 修复轮 + 最大轮数 = 至多 4 轮调用；每轮每家最多 (RETRIES+1) 次调用。
+        per_round = DEBATE_TIMEOUT_SECONDS * (DEBATE_RETRIES + 1) + 2 * DEBATE_RETRIES
+        return per_round * (DEBATE_MAX_ROUNDS + 1)
     timeout, retries = MODEL_TIMEOUT_SECONDS, MODEL_MAX_RETRIES
     return timeout * (retries + 1) + MODEL_RETRY_BACKOFF_SECONDS * retries

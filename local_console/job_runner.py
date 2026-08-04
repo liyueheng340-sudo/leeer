@@ -161,13 +161,26 @@ def run_job(service: object, job_id: str) -> None:
             # 辩论最坏 ~960s（4 轮 × 240s），远超陈旧阈值余量：心跳线程每 60s
             # 刷新 updated_at，防止陈旧扫描误杀仍在推进的辩论（2026-08-03 实测
             # 752 秒辩论被 750s 阈值误杀）。daemon 线程随辩论结束停止。
+            # 2026-08-04 审查修复（INCR）：心跳失败（touch 持续抛错，如磁盘满/
+            # jobs 目录被锁）时设置 abort_event 让辩论提前中止，而不是静默退出后
+            # 让辩论盲跑至结果被陈旧扫描丢弃。
             heartbeat_stop = threading.Event()
+            debate_abort = threading.Event()
+            # 注册到 service 中止广播：close() 时 set 让辩论提前返回（避免 Ctrl+C 卡死）
+            service.register_abort(debate_abort)
 
             def _debate_heartbeat() -> None:
                 while not heartbeat_stop.wait(60):
                     try:
                         service.store.touch(job_id, "三家模型辩论中（Qwen/DeepSeek/GLM）")
-                    except Exception:
+                    except Exception as error:
+                        log_event(
+                            service.config.runlog_path,
+                            kind="heartbeat_error",
+                            job_id=job_id,
+                            error=f"{type(error).__name__}: {error}",
+                        )
+                        debate_abort.set()
                         heartbeat_stop.set()
                         return
 
@@ -176,9 +189,12 @@ def run_job(service: object, job_id: str) -> None:
             )
             heartbeat.start()
             try:
-                debate_result = run_debate(service.config, facts, gate, record.mode)
+                debate_result = run_debate(
+                    service.config, facts, gate, record.mode, abort_event=debate_abort
+                )
             finally:
                 heartbeat_stop.set()
+                service.unregister_abort(debate_abort)
             consensus = debate_result["consensus"]
             report = consensus.get("report")
             service._advance(job_id, "VALIDATE", "正在汇总辩论共识并校验", gate=gate_payload, debate=debate_result)

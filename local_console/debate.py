@@ -141,26 +141,54 @@ def _digest_report(report: dict[str, Any] | None) -> str:
     return "；".join(parts)
 
 
+def _aborted_result(rounds: list[dict[str, Any]]) -> dict[str, Any]:
+    """辩论被外部中止（心跳失败/服务关闭）时返回当前进度 + 空共识。
+
+    调用方（job_runner）看到 consensus.report is None 且 valid_count=0，
+    会走辩论失败降级路径（单模型深度分析兜底），不会把中止误当成功。
+    """
+    return {
+        "rounds": rounds,
+        "consensus": {
+            "direction": None,
+            "report": None,
+            "valid_count": 0,
+            "aborted": True,
+        },
+    }
+
+
 def run_debate(
     config: ConsoleConfig,
     snapshot: dict[str, object],
     gate: GateResult,
     mode: str,
     max_rounds: int = 3,
+    abort_event: threading.Event | None = None,
 ) -> dict[str, Any]:
     """执行三家辩论，返回完整讨论记录 + 综合报告。
 
     返回结构：
         rounds: [{round: 1, statements: [{provider, model, role, content, ok}]}]
         consensus: {direction, votes, disagree: [...], report, valid_count}
+
+    abort_event（2026-08-04 审查修复）：外部（心跳失败/服务关闭）置位时，
+    每轮调用前检查并提前返回当前进度——避免辩论在心跳已失效时盲跑至结果
+    被陈旧扫描丢弃（valid_count=0 → 调用方走失败路径）。
     """
     rounds: list[dict[str, Any]] = []
+
+    def _aborted() -> bool:
+        return abort_event is not None and abort_event.is_set()
+
     # 第 1 轮：独立分析（各带视角定位）
     round1_prompts = [
         (t["provider"], t["model"],
          build_debate_prompt(snapshot, gate, mode, t["role"], t["focus"], round_no=1))
         for t in DEBATE_TEAM
     ]
+    if _aborted():
+        return _aborted_result(rounds)
     round1 = _run_parallel(config, round1_prompts)
     # 每家的报告（解析 + 独立验收）
     reports: dict[str, dict[str, Any]] = {}
@@ -189,7 +217,7 @@ def run_debate(
     rounds.append({"round": 1, "statements": statements_1})
 
     # 修复轮：第 1 轮 <2 家有效时，让失败的模型按提示补全（提升容错，防单家小失误拖垮整场）
-    if len(reports) < DEBATE_MIN_VALID:
+    if len(reports) < DEBATE_MIN_VALID and not _aborted():
         repair_prompts = []
         for t in DEBATE_TEAM:
             provider, model = t["provider"], t["model"]
@@ -227,6 +255,8 @@ def run_debate(
             rounds.append({"round": "1.5（修复）", "statements": statements_1[len(round1):]})
 
     # 第 2 轮：交叉辩论（看到另两家第 1 轮内容）
+    if _aborted():
+        return _aborted_result(rounds)
     round2_prompts = []
     for t in DEBATE_TEAM:
         provider, model = t["provider"], t["model"]
@@ -254,7 +284,7 @@ def run_debate(
     vote_long = directions.count("LONG")
     vote_short = directions.count("SHORT")
     has_disagreement = len(directions) >= 2 and not (vote_long >= 2 or vote_short >= 2)
-    if has_disagreement and len(rounds) < max_rounds:
+    if has_disagreement and len(rounds) < max_rounds and not _aborted():
         round3_prompts = []
         for t in DEBATE_TEAM:
             provider, model = t["provider"], t["model"]

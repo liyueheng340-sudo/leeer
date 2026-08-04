@@ -80,6 +80,9 @@ def prune_old_data(service: object) -> None:
 
     只触碰过期文件（进行中的任务与其快照均为新近文件），与前台任务无竞争；
     任何失败都只记日志，不影响服务。
+
+    2026-08-04 审查修复（INCR）：连带清理 rejected/ 孤儿文件（job 记录被
+    prune 后永久残留）+ runlog 轮转（此前无界增长）。
     """
     try:
         pruned_jobs = service.store.prune_expired(
@@ -87,16 +90,55 @@ def prune_old_data(service: object) -> None:
         )
         for job_id in pruned_jobs:
             (service.config.snapshots_dir / f"{job_id}.jsonl").unlink(missing_ok=True)
+            (service.config.state_dir / "rejected" / f"{job_id}.jsonl").unlink(missing_ok=True)
         pruned_snapshots = prune_old_snapshots(service)
-        if pruned_jobs or pruned_snapshots:
+        pruned_rejected = prune_old_rejected(service)
+        rotated_runlog = rotate_runlog(service.config.runlog_path)
+        if pruned_jobs or pruned_snapshots or pruned_rejected or rotated_runlog:
             log_event(
                 service.config.runlog_path,
                 kind="retention",
                 pruned_jobs=len(pruned_jobs),
                 pruned_snapshots=pruned_snapshots,
+                pruned_rejected=pruned_rejected,
+                rotated_runlog=rotated_runlog,
             )
     except Exception:
         log_event(service.config.runlog_path, kind="retention", error=True)
+
+
+def prune_old_rejected(service: object) -> int:
+    """按文件修改时间清理过期 rejected/ 诊断文件（含无对应任务的孤儿文件）。"""
+    rejected_dir = service.config.state_dir / "rejected"
+    if not rejected_dir.is_dir():
+        return 0
+    now = time.time()
+    removed = 0
+    for path in rejected_dir.glob("*.jsonl"):
+        try:
+            if now - path.stat().st_mtime > RETENTION_MAX_AGE_SECONDS:
+                path.unlink(missing_ok=True)
+                removed += 1
+        except OSError:
+            continue
+    return removed
+
+
+def rotate_runlog(runlog_path: Path, max_bytes: int = 50 * 1024 * 1024) -> bool:
+    """runlog 超过阈值时截断为最近一半，防止无界增长（50MB 上限）。
+
+    实现：保留文件的后半（最近约 25MB 行），前缀丢弃——追加式日志的
+    旧行没有价值，保留尾部即可。任何失败静默（日志轮转失败不影响服务）。
+    """
+    try:
+        if not runlog_path.is_file() or runlog_path.stat().st_size <= max_bytes:
+            return False
+        lines = runlog_path.read_text(encoding="utf-8", errors="replace").splitlines()
+        keep = lines[len(lines) // 2:]
+        runlog_path.write_text("\n".join(keep) + "\n", encoding="utf-8")
+        return True
+    except OSError:
+        return False
 
 
 def prune_old_snapshots(service: object) -> int:
