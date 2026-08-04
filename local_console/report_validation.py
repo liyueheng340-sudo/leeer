@@ -212,9 +212,18 @@ def _validate_evidence_fields(
       不整单拒绝（否则 DeepSeek/GLM 引用 items[1] 越界或短名路径就必被拒）。
     """
     fields = payload.get("evidence_fields")
-    if not isinstance(fields, list) or not fields or len(fields) > MAX_EVIDENCE_FIELDS:
+    if not isinstance(fields, list) or not fields:
         return "依据字段列表无效：evidence_fields", []
+    # 超限容错（2026-08-04 复审实测）：模型合法引用 21 个字段被硬拒——今日
+    # 两单自动调度简报均命中（观察报告事实字段多，合法引用就易超 20 个）。
+    # 截前 N 个并标注，不整单拒绝：引用完整性是展示问题，不是真实性问题。
     warnings: list[str] = []
+    if len(fields) > MAX_EVIDENCE_FIELDS:
+        warnings.append(
+            f"evidence_fields 超过 {MAX_EVIDENCE_FIELDS} 个（{len(fields)} 个），已截取前 {MAX_EVIDENCE_FIELDS} 个"
+        )
+        fields = fields[:MAX_EVIDENCE_FIELDS]
+        payload["evidence_fields"] = fields
     for field in fields:
         if not isinstance(field, str) or not EVIDENCE_FIELD_PATTERN.match(field):
             return "依据字段列表无效：evidence_fields", []

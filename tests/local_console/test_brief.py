@@ -562,6 +562,19 @@ class BriefValidationTests(unittest.TestCase):
         self.assertTrue(accepted, reason)
         self.assertEqual("报告已验收", reason)
 
+    def test_evidence_fields_over_20_truncated_with_warning(self):
+        # 2026-08-04 复审实测：模型合法引用 21 个字段被硬拒（今日两单自动调度
+        # 简报实证），观察报告事实字段多，合法引用就易超 20——截前 20 个并标注。
+        payload = analyse_payload()
+        payload["evidence_fields"] = ["bid", "ask"] * 10 + ["spread"]  # 21 个合法字段
+
+        accepted, reason, report = validate_report(payload, ANALYSE_GATE, analyse_snapshot())
+
+        self.assertTrue(accepted, reason)
+        self.assertEqual("报告已验收", reason)
+        self.assertEqual(20, len(report["evidence_fields"]))
+        self.assertTrue(has_validation_warning(report, "已截取前 20"))
+
     def test_evidence_fields_are_required(self):
         payload = analyse_payload()
         del payload["evidence_fields"]
