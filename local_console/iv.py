@@ -52,12 +52,19 @@ IV_NOTE = "IV 为 GLD 期权链推导的波动预期（期权市场定价），�
 
 
 def _annualized_hv(closes: list[float], window: int) -> float | None:
-    """滚动窗口年化历史波动率；样本不足返回 None。"""
+    """滚动窗口年化历史波动率；样本不足返回 None。
+
+    2026-08-04 修复：浮点累加误差可使 var 为极小负数（如 -1e-18），
+    math.sqrt(负) 返回 NaN——NaN 经 json.dumps 序列化为非法 JSON，
+    浏览器 JSON.parse 抛 "Unexpected token N"，导致前端状态读取全挂。
+    """
     if len(closes) < window + 1:
         return None
     rets = [closes[i] / closes[i - 1] - 1.0 for i in range(len(closes) - window, len(closes))]
     mean = sum(rets) / len(rets)
     var = sum((r - mean) ** 2 for r in rets) / (len(rets) - 1)
+    if var < 0:
+        return 0.0  # 浮点误差：视为零波动
     return math.sqrt(var) * math.sqrt(252)
 
 
@@ -349,6 +356,22 @@ def _write_rank_cache(path: Path, values: list[float]) -> None:
         pass  # 缓存失败不影响主流程
 
 
+def _sanitize_nan(node: Any) -> Any:
+    """递归把 NaN/Infinity 替换为 None（防脏缓存/脏数据污染 JSON 响应）。
+
+    2026-08-04 修复：旧代码曾在 hv20/hv60 缓存 NaN，Python json.dumps 默认
+    输出非法 JSON（NaN），浏览器 JSON.parse 抛 "Unexpected token N"，
+    前端状态读取全挂（用户"状态读取都失败"根因）。
+    """
+    if isinstance(node, dict):
+        return {k: _sanitize_nan(v) for k, v in node.items()}
+    if isinstance(node, list):
+        return [_sanitize_nan(v) for v in node]
+    if isinstance(node, float) and (math.isnan(node) or math.isinf(node)):
+        return None
+    return node
+
+
 def _read_snapshot_cache(path: Path, now: datetime) -> dict[str, Any] | None:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -365,7 +388,14 @@ def _read_snapshot_cache(path: Path, now: datetime) -> dict[str, Any] | None:
         return None
     if now.astimezone(UTC) - fetched_at > timedelta(hours=IV_CACHE_TTL_HOURS):
         return None
-    return payload
+    cleaned = _sanitize_nan(payload)
+    if cleaned.get("status") != "ok" or any(
+        isinstance(v, float) and (math.isnan(v) or math.isinf(v))
+        for v in (cleaned.get("atm_iv"), cleaned.get("hv20"), cleaned.get("hv60"))
+        if isinstance(v, (int, float))
+    ):
+        return None  # 缓存含 NaN/Inf → 视为无效，重新拉取
+    return cleaned
 
 
 def _write_snapshot_cache(path: Path, payload: dict[str, Any]) -> None:
@@ -403,7 +433,7 @@ def fetch_iv_context(config: ConsoleConfig, now: datetime | None = None) -> dict
         import yfinance as yf
 
         history = yf.Ticker("GLD").history(period="1y", interval="1d")
-        closes = [float(v) for v in history["Close"].tolist()]
+        closes = [float(v) for v in history["Close"].tolist() if math.isfinite(float(v))]
         hv20 = _annualized_hv(closes, 20)
         hv60 = _annualized_hv(closes, 60)
     except Exception:

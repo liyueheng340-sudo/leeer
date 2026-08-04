@@ -16,6 +16,24 @@ from .runlog import log_event
 from .service import ConsoleService
 
 
+def _sanitize_nan(node: object) -> object:
+    """递归把 NaN/Infinity 替换为 None，保证 JSON 响应合法。
+
+    2026-08-04 修复根因：历史任务/缓存里可能残留 NaN（如 iv.hv20 浮点误差），
+    Python json.dumps 默认输出非法 JSON（NaN），浏览器 JSON.parse 抛
+    "Unexpected token N" → 前端状态读取全挂。所有 API 响应统一净化。
+    """
+    import math
+
+    if isinstance(node, dict):
+        return {k: _sanitize_nan(v) for k, v in node.items()}
+    if isinstance(node, list):
+        return [_sanitize_nan(v) for v in node]
+    if isinstance(node, float) and (math.isnan(node) or math.isinf(node)):
+        return None
+    return node
+
+
 class ConsoleHTTPServer(ThreadingHTTPServer):
     # Windows 的 SO_REUSEADDR 语义允许第二个进程劫持绑定同一端口——必须禁用，
     # 防止多个控制台实例同时写同一 jobs 目录互相踩文件（单实例纪律）。
@@ -164,7 +182,16 @@ class ConsoleRequestHandler(BaseHTTPRequestHandler):
         self.wfile.write(content)
 
     def _json(self, status: HTTPStatus, payload: dict[str, object]) -> None:
-        content = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        # 全链路 NaN 净化 + allow_nan=False：历史任务/缓存可能残留 NaN/Infinity
+        # （2026-08-04 实测根因：iv.hv20 浮点误差产生 NaN 已落盘旧任务），
+        # 浏览器 JSON.parse 不认 NaN 会抛 "Unexpected token N" 导致前端全挂。
+        try:
+            content = json.dumps(
+                _sanitize_nan(payload), ensure_ascii=False, allow_nan=False
+            ).encode("utf-8")
+        except (TypeError, ValueError):
+            self._json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "服务器内部错误，请重新发起"})
+            return
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(content)))
