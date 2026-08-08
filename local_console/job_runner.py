@@ -17,6 +17,12 @@ from .facts_builder import build_facts, build_gate_payload
 from .housekeeping import run_reviews_safe
 from .jobs import TERMINAL_STAGES
 from .market_capture import capture_market_data, safe_ea_status, safe_macro, safe_news
+from .risk_controls import (
+    LOSS_STREAK_RECOVER_NON_LOSS,
+    LOSS_STREAK_THRESHOLD,
+    apply_circuit_breaker,
+    circuit_tripped,
+)
 from .runlog import log_event
 from .session_context import (
     SESSION_CONTEXT_KEY,
@@ -131,6 +137,26 @@ def run_job(service: object, job_id: str) -> None:
             iv_context=iv_context,
             mode=record.mode,
         )
+        # 连亏熔断（方案 B 动态风控，2026-08-07）：读最近已判定 review，
+        # 连续 N 单 SL_FIRST 后禁方向建议（保留分析，符合宪法"军师不锁分析"）。
+        # 否决权来自测量（复盘 outcome），不来自意见。状态机含恢复（M 非亏损解除）。
+        recent = service.store.list_recent(limit=50)
+        streak = circuit_tripped(recent, LOSS_STREAK_THRESHOLD, LOSS_STREAK_RECOVER_NON_LOSS)
+        if streak is not None:
+            gate = apply_circuit_breaker(gate, streak, LOSS_STREAK_THRESHOLD)
+            gate_payload["circuit_breaker"] = {
+                "streak": streak,
+                "threshold": LOSS_STREAK_THRESHOLD,
+                "recover": LOSS_STREAK_RECOVER_NON_LOSS,
+                "tripped": gate.directional_plan_allowed is False,
+            }
+            log_event(
+                service.config.runlog_path,
+                kind="circuit_breaker",
+                job_id=job_id,
+                streak=streak,
+                tripped=gate.directional_plan_allowed is False,
+            )
         log_event(
             service.config.runlog_path,
             kind="gate",

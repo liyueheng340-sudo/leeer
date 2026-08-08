@@ -30,7 +30,13 @@ from .market_capture import (
     safe_tick_health,
 )
 from .news import fetch_news_context
-from .review import compute_context_stats, compute_review_stats, run_due_reviews
+from .review import (
+    compute_context_stats,
+    compute_direction_quality,
+    compute_forward_validation,
+    compute_review_stats,
+    run_due_reviews,
+)
 from .runlog import log_event
 from .snapshot import capture_snapshot
 from .ticks import capture_tick_health
@@ -196,6 +202,10 @@ class ConsoleService:
         stats = compute_review_stats(records)
         # 情境复盘：同一批记录按单维度切分，回答"什么情境下流程有 edge"。
         stats["contexts"] = compute_context_stats(records)
+        # 前向验证：最近窗口 vs 更早窗口，回答"纪律生效后 edge 是否持续/改善"。
+        stats["forward_validation"] = compute_forward_validation(records)
+        # 方向×结果四分格（P0）：区分方向能力 vs 执行点位能力。
+        stats["direction_quality"] = compute_direction_quality(records)
         return stats
 
     def auto_status(self) -> dict[str, object]:

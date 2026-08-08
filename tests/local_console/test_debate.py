@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from local_console.config import ConsoleConfig
-from local_console.debate import run_debate
+from local_console.debate import _invoke_model, run_debate
 from local_console.guard import GateResult
 
 NOW = datetime(2026, 8, 2, 12, 0, tzinfo=UTC)
@@ -163,6 +163,60 @@ class DebateRoundTests(unittest.TestCase):
             )
         self.assertEqual(2, result["consensus"]["valid_count"])
         self.assertEqual("LONG", result["consensus"]["direction"])
+
+
+class InvokeModelFallbackTests(unittest.TestCase):
+    """B1：_invoke_model 主端点失败时切到备用端点。"""
+
+    def make_fallback_config(self, root: Path) -> ConsoleConfig:
+        return ConsoleConfig(
+            repo_root=root,
+            state_dir=root / "runtime",
+            mt5_python=root / "python.exe",
+            mt5_snapshot_script=root / "snapshot.py",
+            backend_url="https://primary.invalid/v1",
+            quick_model="quick",
+            deep_model="deep",
+            fallback_backend_url="https://fallback.invalid/v1",
+            fallback_api_key="fallback-key",
+        )
+
+    def test_fallback_used_when_primary_fails(self):
+        from unittest.mock import MagicMock
+
+        def primary_llm():
+            raise RuntimeError("primary down")
+
+        fallback_llm = MagicMock()
+        fallback_llm.invoke.return_value = MagicMock(content='{"ok": true}')
+
+        def fake_client(provider, model, base_url=None, api_key=None, **kwargs):
+            if "fallback" in str(base_url):
+                return MagicMock(get_llm=lambda: fallback_llm)
+            return MagicMock(get_llm=primary_llm)
+
+        with tempfile.TemporaryDirectory() as directory:
+            config = self.make_fallback_config(Path(directory))
+            with patch("local_console.debate.create_llm_client", side_effect=fake_client) as client:
+                result = _invoke_model(config, "qwen", "qwen3.7-max", "prompt")
+
+        self.assertEqual('{"ok": true}', result)
+        # 主端点 + 备用端点各被调用一次
+        self.assertEqual(2, client.call_count)
+
+    def test_no_fallback_when_not_configured(self):
+        from unittest.mock import MagicMock
+
+        def primary_llm():
+            raise RuntimeError("primary down")
+
+        with tempfile.TemporaryDirectory() as directory:
+            config = make_config(Path(directory))  # 无 fallback 配置
+            with patch("local_console.debate.create_llm_client",
+                       return_value=MagicMock(get_llm=primary_llm)) as client, self.assertRaises(RuntimeError):
+                _invoke_model(config, "qwen", "qwen3.7-max", "prompt")
+
+        self.assertEqual(2, client.call_count)  # DEBATE_RETRIES=1 重试主端点一次，无 fallback
 
 
 if __name__ == "__main__":

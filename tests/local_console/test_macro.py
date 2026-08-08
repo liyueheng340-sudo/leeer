@@ -39,16 +39,68 @@ def ok_side_effect(*_args, **_kwargs):
     return fred_response([("2026-07-30", "1.85"), ("2026-07-29", "1.80")])
 
 
+def csv_ok_side_effect(url, *args, **kwargs):
+    # 免 key CSV 端点：返回 observation_date,{SERIES} 两列，列名随请求的序列变化
+    from unittest.mock import MagicMock
+
+    series_id = kwargs.get("params", {}).get("id", "DFII10")
+    response = MagicMock()
+    response.raise_for_status.return_value = None
+    response.text = (
+        f"observation_date,{series_id}\n"
+        f"2026-07-30,1.85\n2026-07-29,1.80\n"
+    )
+    return response
+
+
 class MacroBackgroundTests(unittest.TestCase):
-    def test_missing_api_key_is_unavailable_without_network(self):
+    def test_missing_api_key_falls_back_to_csv(self):
+        # 无 FRED_API_KEY 时不再直接 unavailable，而是走免 key CSV 端点降级
         with tempfile.TemporaryDirectory() as directory:
             config = make_config(Path(directory))
-            with patch.dict(os.environ, {}, clear=True), patch("local_console.macro.requests.get") as getter:
+            with patch.dict(os.environ, {}, clear=True), patch(
+                "local_console.macro.requests.get", side_effect=csv_ok_side_effect
+            ) as getter:
+                result = fetch_macro_background(config, NOW)
+
+        self.assertEqual("ok", result["status"])
+        self.assertEqual(set(MACRO_SERIES), set(result["series"]))
+        # 无 key 时全部走 CSV 端点
+        for call in getter.call_args_list:
+            self.assertIn("fredgraph.csv", call.args[0])
+
+    def test_missing_api_key_csv_all_fail_is_unavailable(self):
+        # 无 key 且 CSV 也全部失败 → unavailable
+        with tempfile.TemporaryDirectory() as directory:
+            config = make_config(Path(directory))
+            with patch.dict(os.environ, {}, clear=True), patch(
+                "local_console.macro.requests.get",
+                side_effect=ConnectionError("network down"),
+            ):
                 result = fetch_macro_background(config, NOW)
 
         self.assertEqual("unavailable", result["status"])
-        self.assertIn("FRED_API_KEY", result["reason"])
-        getter.assert_not_called()
+        self.assertIn("FRED 请求失败", result["reason"])
+
+    def test_api_failure_degrades_to_csv(self):
+        # 官方 API 失败自动降级 CSV：官方端点抛错，CSV 端点成功
+        calls = {"count": 0}
+
+        def degrading(url, *args, **kwargs):
+            calls["count"] += 1
+            if "fredgraph.csv" in str(url):
+                return csv_ok_side_effect(url, *args, **kwargs)
+            raise ConnectionError("official api down")
+
+        with tempfile.TemporaryDirectory() as directory:
+            config = make_config(Path(directory))
+            with patch.dict(os.environ, {"FRED_API_KEY": "test-key"}), patch(
+                "local_console.macro.requests.get", side_effect=degrading
+            ):
+                result = fetch_macro_background(config, NOW)
+
+        self.assertEqual("ok", result["status"])
+        self.assertEqual(set(MACRO_SERIES), set(result["series"]))
 
     def test_successful_fetch_returns_daily_background_layer(self):
         with tempfile.TemporaryDirectory() as directory:

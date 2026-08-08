@@ -218,10 +218,33 @@ function renderGate(gate, stage) {
     : action === "ANALYSE" ? "已核验"
     : actionLabel(action);
 
+  renderSentinel(gate);
   renderSensors(gate);
 }
 
 /* tick 传感器与宏观背景只是闸门的辅助读数，离线不视为故障 */
+function renderSentinel(gate) {
+  const sentinel = gate?.jinqilin_sentinel;
+  const card = byId("sentinel-card");
+  const badge = byId("sentinel-badge");
+  const levelEl = byId("sentinel-level");
+  const flagsEl = byId("sentinel-flags");
+  const adviceEl = byId("sentinel-advice");
+  if (!sentinel || sentinel.available !== true) {
+    card.hidden = true;
+    return;
+  }
+  const level = String(sentinel.risk_level || "LOW");
+  badge.textContent = level;
+  badge.className = `chip chip-${level === "CRITICAL" ? "danger" : level === "HIGH" ? "warning" : level === "MEDIUM" ? "analyse" : "muted"}`;
+  levelEl.textContent = `${level} · ${sentinel.risk_score ?? 0}/10`;
+  const flags = Array.isArray(sentinel.flags) ? sentinel.flags : [];
+  flagsEl.innerHTML = flags.map((f) => `<li class="gate-warning">${escapeHtml(String(f))}</li>`).join("");
+  flagsEl.hidden = flags.length === 0;
+  adviceEl.textContent = String(sentinel.advice || "");
+  card.hidden = false;
+}
+
 function renderSensors(gate) {
   const tick = gate?.tick_health;
   const tickEl = byId("tick-status");

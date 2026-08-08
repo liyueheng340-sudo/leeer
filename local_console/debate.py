@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
@@ -46,13 +47,24 @@ DEBATE_RETRIES = 1
 # 后者不传 key（401）——这正是此前深度复盘必败的根因。
 # 注意：qwen3.8-max-preview 在完整报告契约 prompt 下 content 恒空
 # （纯 reasoning 模型，实测 4000/8000 token 均无输出），技术派改用 qwen3.7-max。
+# persona（2026-08-07 人格注入）：给三家互补的投资哲学视角强化观点质量，
+# 仅作分析视角增强，不引入任何 JSON 输出字段 / 不改变 required_json_keys。
 DEBATE_TEAM: list[dict[str, str]] = [
     {"provider": "qwen", "model": "qwen3.7-max", "role": "技术面主攻",
-     "focus": "多周期结构、共振、关键价位、点位纪律（技术派视角）"},
+     "focus": "多周期结构、共振、关键价位、点位纪律（技术派视角）",
+     "persona": "量化纪律派（Paul Tudor Jones 式）：顺势而为、严格截断亏损、让利润奔跑。"
+                "强调结构共振与关键价位的几何纪律，严格执行 ATR 止损，宁可错过不错做；"
+                "任何进场都必须有可复算的价位依据，绝不追价、绝不在无结构处凭感觉押注。"},
     {"provider": "qwen", "model": "deepseek-v4-flash-0731", "role": "宏观情绪主攻",
-     "focus": "宏观背景、新闻预期差、事件驱动（宏观派视角）"},
+     "focus": "宏观背景、新闻预期差、事件驱动（宏观派视角）",
+     "persona": "宏观对冲派（Ray Dalio 经济机器式）：锚定实际利率、美元、流动性与通胀预期的传导链，"
+                "突出黄金的货币与避险属性。关注事件预期差——价格是否已定价，而非反应式追新闻；"
+                "用宏观周期判断中期方向，再落到当下价位。"},
     {"provider": "qwen", "model": "glm-5.2", "role": "风险对抗",
-     "focus": "专挑前两者逻辑漏洞与风险盲区（风控派视角）"},
+     "focus": "专挑前两者逻辑漏洞与风险盲区（风控派视角）",
+     "persona": "安全边际派（Benjamin Graham 式）：第一性质疑前两者假设是否经得起验证。"
+                "紧盯仓位与尾部风险、宏观数据的时滞缺口、新闻尚未定价的盲区；"
+                "当机会看似完美时，主动寻找被忽视的失败前提，宁可保守也不承担不对称的下行风险。"},
 ]
 
 
@@ -60,6 +72,8 @@ def _invoke_model(config: ConsoleConfig, provider: str, model: str, prompt: str)
     """调用单家模型返回原始文本；瞬时失败（网络抖动/连接错误）重试有限次。
 
     推理模型 thinking 后 content 可能仍为空（token 耗尽）则报错，由调用方剔除。
+    双区端点冗余（与 brief 一致）：主端点失败/额度耗尽时切备用端点重试，
+    避免深度复盘因单一套餐耗尽而整场失败（2026-08-07 增强）。
     """
     last_error: Exception | None = None
     for attempt in range(DEBATE_RETRIES + 1):
@@ -75,6 +89,20 @@ def _invoke_model(config: ConsoleConfig, provider: str, model: str, prompt: str)
             return content
         except Exception as error:
             last_error = error
+            # 主端点失败 → 备用端点重试一次（阿里云双区独立计费）
+            if config.fallback_backend_url and config.fallback_api_key:
+                try:
+                    fallback_llm = create_llm_client(
+                        "openai_compatible", model, config.fallback_backend_url,
+                        api_key=config.fallback_api_key, timeout=DEBATE_TIMEOUT_SECONDS,
+                        max_retries=0,
+                    ).get_llm()
+                    response = fallback_llm.invoke(prompt, max_tokens=DEBATE_MAX_TOKENS)
+                    content = getattr(response, "content", response)
+                    if isinstance(content, str) and content.strip():
+                        return content
+                except Exception:
+                    pass  # 备用也失败：继续走主端点重试/抛原始错误，便于诊断
             if attempt < DEBATE_RETRIES:
                 time.sleep(2)
     raise RuntimeError(f"{model} 调用失败") from last_error
@@ -181,10 +209,11 @@ def run_debate(
     def _aborted() -> bool:
         return abort_event is not None and abort_event.is_set()
 
-    # 第 1 轮：独立分析（各带视角定位）
+    # 第 1 轮：独立分析（各带视角定位 + 人格注入）
     round1_prompts = [
         (t["provider"], t["model"],
-         build_debate_prompt(snapshot, gate, mode, t["role"], t["focus"], round_no=1))
+         build_debate_prompt(snapshot, gate, mode, t["role"], t["focus"],
+                             round_no=1, persona=t.get("persona")))
         for t in DEBATE_TEAM
     ]
     if _aborted():
@@ -226,7 +255,8 @@ def run_debate(
             repair_prompts.append(
                 (provider, model,
                  build_debate_prompt(snapshot, gate, mode, t["role"], t["focus"],
-                                     round_no=1, others=statements_1))
+                                     round_no=1, others=statements_1,
+                                     persona=t.get("persona")))
             )
         if repair_prompts:
             repair = _run_parallel(config, repair_prompts)

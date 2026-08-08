@@ -216,9 +216,8 @@ class BriefRequestTests(unittest.TestCase):
             client.get_llm.return_value = llm
             return client
 
-        with patch("local_console.brief.create_llm_client", side_effect=fake_factory):
-            with self.assertRaises(RuntimeError):
-                request_brief(config, "brief", {"symbol": "XAUUSD"}, ANALYSE_GATE)
+        with patch("local_console.brief.create_llm_client", side_effect=fake_factory), self.assertRaises(RuntimeError):
+            request_brief(config, "brief", {"symbol": "XAUUSD"}, ANALYSE_GATE)
 
 
 class InvokeWithRetryTests(unittest.TestCase):
@@ -562,6 +561,17 @@ class BriefValidationTests(unittest.TestCase):
         self.assertEqual("止盈距离入场超过 5 倍参考 ATR", reason)
         self.assertIsNone(report)
 
+    def test_stop_loss_too_narrow_is_rejected(self):
+        # MIN_STOP_ATR=0.5 × ATR(20)=10：止损距离 < 10 视为过窄（易被点差/噪音扫损）
+        payload = analyse_payload()
+        payload["stop_loss"] = "3998"  # 距入场 4000 仅 2 < 10
+
+        accepted, reason, report = validate_report(payload, ANALYSE_GATE, analyse_snapshot())
+
+        self.assertFalse(accepted)
+        self.assertIn("止损距离入场小于", reason)
+        self.assertIsNone(report)
+
     def test_neutral_direction_skips_price_geometry(self):
         payload = analyse_payload()
         payload["direction"] = "NEUTRAL"
@@ -760,9 +770,9 @@ class NewsSourceValidationTests(unittest.TestCase):
         self.assertNotIn("预期差", prompt)
 
     def test_prompt_version_upgraded_for_news(self):
-        # 版本锁：1.8.0 顺势回调纪律（scalp 只吃回调不追价、TP 快速止盈 1.0-1.5R、
-        # M5 range_location_8 注入；依据本地回测回调 +0.21R vs 追价 -0.43R）。
-        self.assertEqual("1.8.0", PROMPT_VERSION)
+        # 版本锁：1.12.0 指标去重 + 方向冲突裁决（signal_votes.trend 与 resonance
+        # 去重；新增方向冲突优先级 trend>resonance>votes>divergence，2026-08-07）。
+        self.assertEqual("1.12.0", PROMPT_VERSION)
 
     def test_prompt_contains_event_cross_validation_rule(self):
         """verified_clear 状态的 prompt 应包含事件交叉验证规则。"""
@@ -1152,3 +1162,53 @@ class MarketRegimeValidationTests(unittest.TestCase):
 
         self.assertIn("震荡市", prompt)
         self.assertIn("风险标注", prompt)
+
+
+class DirectionTiebreakTests(unittest.TestCase):
+    """1.12.0：指标去重 + 方向冲突裁决优先级（P0 + P1）。"""
+
+    def test_signal_votes_dedup_rule_present(self):
+        # P1：signal_votes 的 trend 与 resonance 同一算法，不得重复计权
+        snapshot = analyse_snapshot()
+        snapshot["timeframe_resonance"] = {
+            "available": True, "score": 0.6, "label": "共振偏多",
+        }
+        snapshot["signal_votes"] = {
+            "available": True,
+            "consensus": 0.5,
+            "label": "多策略一致偏多",
+            "signals": {
+                "trend": 1, "breakout": 1, "pullback": 0, "macd": 1,
+            },
+        }
+
+        prompt = build_prompt(snapshot, ANALYSE_GATE, "brief")
+
+        self.assertIn("不得重复计权", prompt)
+        self.assertIn("以 timeframe_resonance 为准", prompt)
+
+    def test_direction_tiebreak_rule_present(self):
+        # P0：multi 方向事实冲突时固定优先级
+        snapshot = analyse_snapshot()
+        snapshot["timeframe_resonance"] = {
+            "available": True, "score": -0.6, "label": "共振偏空",
+        }
+        snapshot["market_regime"] = {
+            "available": True,
+            "regime": "trending",
+            "trend_direction": "buy",
+            "rsi_extreme": None,
+            "volatility_confirmed": False,
+        }
+
+        prompt = build_prompt(snapshot, ANALYSE_GATE, "brief")
+
+        self.assertIn("方向冲突裁决规则", prompt)
+        self.assertIn("trend_direction", prompt)
+        self.assertIn("timeframe_resonance.score", prompt)
+
+    def test_no_tiebreak_rule_when_no_direction_facts(self):
+        # 无方向事实时不应出现裁决规则（避免 prompt 噪音）
+        snapshot = analyse_snapshot()
+        prompt = build_prompt(snapshot, ANALYSE_GATE, "brief")
+        self.assertNotIn("方向冲突裁决规则", prompt)

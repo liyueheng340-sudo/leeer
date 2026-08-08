@@ -27,6 +27,8 @@ from .review_stats import (
     MEASUREMENT_DISCLAIMER,
     REVIEW_OUTCOMES,
     compute_context_stats,
+    compute_direction_quality,
+    compute_forward_validation,
     compute_review_stats,
 )
 from .snapshot_facts import _parse_prices
@@ -36,6 +38,9 @@ ReviewOutcome = Literal[
 ]
 
 REVIEW_WINDOW_HOURS = 24
+# 方向对错判定阈值（2026-08-07 P0）：入场触及后，价格向建议方向移动达到
+# 该比例 × 止损距离（risk）即视为"方向正确"。用于区分方向能力 vs 执行点位能力。
+DIRECTION_CONFIRM_FRACTION = 0.5
 
 __all__ = [
     "MEASUREMENT_DISCLAIMER",
@@ -45,6 +50,8 @@ __all__ = [
     "REVIEW_WINDOW_HOURS",
     "ReviewOutcome",
     "compute_context_stats",
+    "compute_direction_quality",
+    "compute_forward_validation",
     "compute_review_stats",
     "due_for_review",
     "evaluate_plan",
@@ -82,16 +89,24 @@ def evaluate_plan(
     created_at: datetime,
     now: datetime,
 ) -> dict[str, Any]:
-    """Walk bars in order and decide the outcome of a trade plan."""
+    """Walk bars in order and decide the outcome of a trade plan.
+
+    2026-08-07 P0 增强：除 TP/SL 结果外，判定"方向对错"（direction_correct）。
+    区分方向能力与执行/点位能力——同为 SL_FIRST，方向对是点位差、方向错是真失败。
+    方向判定：入场触及后，价格向建议方向的最大有利偏移 ≥ DIRECTION_CONFIRM_FRACTION × risk
+    即视为方向正确（risk = 入场中部到止损的距离，作 ATR-like 尺度）。
+    """
     is_long = plan["direction"] == "LONG"
     entry_lo, entry_hi = plan["entry_lo"], plan["entry_hi"]
     tp, sl, mid = plan["take_profit"], plan["stop_loss"], plan["entry_mid"]
     risk = abs(mid - sl)
     reward = abs(tp - mid)
     window_end = min(now, created_at + timedelta(hours=REVIEW_WINDOW_HOURS))
+    confirm_threshold = risk * DIRECTION_CONFIRM_FRACTION
 
     touched = False
     last_close: float | None = None
+    max_favorable: float = 0.0  # 入场触及后向建议方向的最大偏移（价格单位）
     for bar in bars:
         high, low, close = float(bar["high"]), float(bar["low"]), float(bar["close"])
         last_close = close
@@ -100,22 +115,30 @@ def evaluate_plan(
                 touched = True
             else:
                 continue
+        # 追踪方向有利偏移（入场触及后才有意义）
+        favorable = max(high - mid, 0.0) if is_long else max(mid - low, 0.0)
+        if favorable > max_favorable:
+            max_favorable = favorable
         hit_tp = high >= tp if is_long else low <= tp
         hit_sl = low <= sl if is_long else high >= sl
         if hit_tp and hit_sl:
             # 同一根 K 线同时覆盖 TP 与 SL：顺序不可知，保守记为止损
-            return _decided("SL_FIRST", -1.0, touched, bar, risk, reward)
+            return _decided("SL_FIRST", -1.0, touched, bar, risk, reward,
+                            direction_correct=max_favorable >= confirm_threshold)
         if hit_tp:
             r_multiple = round(reward / risk, 3) if risk > 0 else None
-            return _decided("TP_FIRST", r_multiple, touched, bar, risk, reward)
+            return _decided("TP_FIRST", r_multiple, touched, bar, risk, reward,
+                            direction_correct=max_favorable >= confirm_threshold)
         if hit_sl:
-            return _decided("SL_FIRST", -1.0, touched, bar, risk, reward)
+            return _decided("SL_FIRST", -1.0, touched, bar, risk, reward,
+                            direction_correct=max_favorable >= confirm_threshold)
 
     if now < created_at + timedelta(hours=REVIEW_WINDOW_HOURS):
         return {
             "outcome": "PENDING",
             "entry_touched": touched,
             "r_multiple": None,
+            "direction_correct": None,
             "window_end": window_end.isoformat(),
         }
     if not touched:
@@ -123,6 +146,7 @@ def evaluate_plan(
             "outcome": "NOT_TRIGGERED",
             "entry_touched": False,
             "r_multiple": None,
+            "direction_correct": None,
             "window_end": window_end.isoformat(),
         }
     floating = None
@@ -133,6 +157,7 @@ def evaluate_plan(
         "outcome": "EXPIRED_UNRESOLVED",
         "entry_touched": True,
         "r_multiple": None,
+        "direction_correct": max_favorable >= confirm_threshold,
         "floating_points": floating,
         "window_end": window_end.isoformat(),
     }
@@ -145,11 +170,13 @@ def _decided(
     bar: dict[str, float],
     risk: float,
     reward: float,
+    direction_correct: bool | None = None,
 ) -> dict[str, Any]:
     return {
         "outcome": outcome,
         "entry_touched": touched,
         "r_multiple": r_multiple,
+        "direction_correct": direction_correct,
         "decided_bar_utc": datetime.fromtimestamp(int(bar["time"]), UTC).isoformat(),
         "risk_points": round(risk, 2),
         "reward_points": round(reward, 2),

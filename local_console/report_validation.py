@@ -38,6 +38,10 @@ NARRATIVE_DEFAULTS: dict[str, str] = {
     "invalidation": "数据过期、身份不匹配或事件状态变化时失效。",
     "next_observation": "等待价格触及关键区间或结构变化后再评估。",
 }
+# 单笔绝对止损下界（2026-08-07 方案 B 动态风控）：止损距离 < 该倍数×ATR 视为
+# 止损过窄，易被点差/盘中噪音直接扫损（复盘负期望源之一）。硬拦截该执行缺陷，
+# 不改变方向权（军师模式：方向保留，只拦不合格执行的止损）。
+MIN_STOP_ATR = 0.5
 
 
 def _mode_limits(mode: str) -> tuple[float, float, float, float]:
@@ -305,6 +309,11 @@ def _validate_against_snapshot(
         return f"止盈距离入场超过 {tp_limit:g} 倍参考 ATR"
     if abs(stop_loss[0] - entry_mid) > sl_limit * atr:
         return f"止损距离入场超过 {sl_limit:g} 倍参考 ATR"
+    # 单笔绝对止损下界（方案 B 动态风控，2026-08-07）：止损距离小于最小 ATR 倍数
+    # 时，止损过窄易被点差/盘中噪音直接扫损（hole 复盘负期望源之一）。硬拦截
+    # 该执行缺陷，不改变方向权（军师模式：方向保留，只拦不合格的执行）。
+    if abs(stop_loss[0] - entry_mid) < MIN_STOP_ATR * atr:
+        return f"止损距离入场小于 {MIN_STOP_ATR:g} 倍参考 ATR（止损过窄，易被点差/噪音扫损）"
     return None
 
 

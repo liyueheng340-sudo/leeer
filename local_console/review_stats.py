@@ -9,6 +9,9 @@ from .jobs import JobRecord
 
 MEASUREMENT_DISCLAIMER = "测量层统计：样本小、未含滑点与费用、模型输出非平稳，不构成可实盘 edge 的证据。"
 REVIEW_OUTCOMES = ("TP_FIRST", "SL_FIRST", "NOT_TRIGGERED", "EXPIRED_UNRESOLVED", "PENDING")
+# 前向验证窗口：默认取最近 25 单已判定样本对比历史（满足统计最低样本门槛，
+# 避免小窗口噪声。2026-08-07 新增）。
+FORWARD_WINDOW = 25
 
 
 def compute_review_stats(records: list[JobRecord]) -> dict[str, Any]:
@@ -167,4 +170,121 @@ def compute_context_stats(records: list[JobRecord]) -> dict[str, Any]:
         "by_spread_percentile": _grouped_stats(records, _spread_percentile_key),
         "by_session": _grouped_stats(records, _session_key),
         "disclaimer": MEASUREMENT_DISCLAIMER,
+    }
+
+
+def _decided_entries(records: list[JobRecord]) -> list[tuple[str, float]]:
+    """提取已判定（TP_FIRST/SL_FIRST）样本的 (created_at, r_multiple)。
+
+    TP_FIRST 用实际 r_multiple；SL_FIRST 计为 -1.0（满额亏损）。按创建时间升序。
+    NOT_TRIGGERED / EXPIRED / PENDING 不参与期望计算（无 TP/SL 结果）。
+    """
+    entries: list[tuple[str, float]] = []
+    for record in records:
+        review = record.review
+        if not isinstance(review, dict):
+            continue
+        outcome = review.get("outcome")
+        if outcome == "TP_FIRST":
+            r_value = review.get("r_multiple")
+            if isinstance(r_value, (int, float)):
+                entries.append((record.created_at, float(r_value)))
+        elif outcome == "SL_FIRST":
+            entries.append((record.created_at, -1.0))
+    entries.sort(key=lambda item: item[0])
+    return entries
+
+
+def _window_summary(entries: list[tuple[str, float]]) -> dict[str, Any]:
+    if not entries:
+        return {"n": 0, "win_rate": None, "avg_r": None}
+    wins = sum(1 for _, r in entries if r > 0)
+    return {
+        "n": len(entries),
+        "win_rate": round(wins / len(entries), 3),
+        "avg_r": round(sum(r for _, r in entries) / len(entries), 3),
+    }
+
+
+def compute_direction_quality(records: list[JobRecord]) -> dict[str, Any]:
+    """方向×结果四分格（2026-08-07 P0）：区分"方向能力"与"执行点位能力"。
+
+    同为 TP/SL 结果，加入 direction_correct（入场后价格是否曾向建议方向移动
+    超过阈值）后分成四格：
+      方向对 + TP  → 真 edge（方向对且执行对）
+      方向对 + SL  → 点位差（方向看对但被扫损/止损太紧）← 隐藏问题
+      方向错 + TP  → 运气（方向错但快速止盈）
+      方向错 + SL  → 真失败（方向也错，执行也差）
+    只统计已判定（TP/SL）且 direction_correct 已判定的样本。
+    """
+    cells = {
+        "dir_correct_tp": [0, 0.0],
+        "dir_correct_sl": [0, 0.0],
+        "dir_wrong_tp": [0, 0.0],
+        "dir_wrong_sl": [0, 0.0],
+    }
+    for record in records:
+        review = record.review
+        if not isinstance(review, dict):
+            continue
+        outcome = review.get("outcome")
+        dc = review.get("direction_correct")
+        if outcome not in ("TP_FIRST", "SL_FIRST") or not isinstance(dc, bool):
+            continue
+        r_value = review.get("r_multiple")
+        r = float(r_value) if outcome == "TP_FIRST" and isinstance(r_value, (int, float)) else -1.0
+        key = ("dir_correct" if dc else "dir_wrong") + ("_tp" if outcome == "TP_FIRST" else "_sl")
+        cells[key][0] += 1
+        cells[key][1] += r
+
+    def _cell_stat(count: int, total_r: float) -> dict[str, Any]:
+        if count == 0:
+            return {"n": 0, "avg_r": None}
+        return {"n": count, "avg_r": round(total_r / count, 3)}
+
+    correct_total = cells["dir_correct_tp"][0] + cells["dir_correct_sl"][0]
+    decided_total = correct_total + cells["dir_wrong_tp"][0] + cells["dir_wrong_sl"][0]
+    rate = round(correct_total / decided_total, 3) if decided_total else None
+
+    return {
+        "dir_correct_tp": _cell_stat(*cells["dir_correct_tp"]),
+        "dir_correct_sl": _cell_stat(*cells["dir_correct_sl"]),
+        "dir_wrong_tp": _cell_stat(*cells["dir_wrong_tp"]),
+        "dir_wrong_sl": _cell_stat(*cells["dir_wrong_sl"]),
+        "direction_correct_rate": rate,
+        "note": "方向×结果四分格：区分方向能力与执行点位能力。方向对+SL=点位差（隐藏痛点）；"
+                "方向错+TP=运气。2026-08-07 P0。",
+    }
+
+
+def compute_forward_validation(
+    records: list[JobRecord], recent_n: int = FORWARD_WINDOW
+) -> dict[str, Any]:
+    """前向验证：对比"最近 N 单"与"更早已判定单"的期望 R 与胜率。
+
+    2026-08-07 新增：回答"新纪律/过滤规则生效后，edge 是否持续或改善"。
+    只对比已判定样本，按创建时间切开为 recent（最近 N 单）与 earlier（更早）。
+    不偷看数据：只用任务创建时间与事后 outcome，不依赖任何未来信息。
+    当 recent_n 大于可判定样本总数时，recent 即全部、earlier 为空。
+    """
+    decided = _decided_entries(records)
+    if not decided:
+        return {
+            "recent": _window_summary([]),
+            "earlier": _window_summary([]),
+            "recent_n": 0,
+            "earlier_n": 0,
+            "note": "暂无已判定样本，无法前向验证",
+        }
+    recent = decided[-recent_n:]
+    earlier = decided[:-recent_n]
+    return {
+        "recent": _window_summary(recent),
+        "earlier": _window_summary(earlier),
+        "recent_n": len(recent),
+        "earlier_n": len(earlier),
+        "note": (
+            f"前向验证：比较最近 {recent_n} 单与更早样本的期望 R。样本小、不含滑点费用，"
+            "趋势变化需结合 review_stats 免责声明解读。"
+        ),
     }

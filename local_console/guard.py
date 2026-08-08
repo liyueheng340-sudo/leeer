@@ -31,6 +31,11 @@ SPREAD_DOWNGRADE_THRESHOLD = 0.5
 SPREAD_BLOCK_PERCENTILE = 0.8
 # 共振明确阈值：|score| ≥ 0.5 视为方向证据明确；否则标注"共振不明确"。
 RESONANCE_CLEAR_THRESHOLD = 0.5
+# 共振偏空阈值：score ≤ -0.5 且确定性证据下，空头方向历史胜率显著低于多头。
+# 依据（2026-08-07 本地复盘 130 单）：SHORT 方向 79 单胜率 30%（-0.18R）vs
+# LONG 51 单胜率 55%（+0.30R）；共振偏空 38 单胜率 21%（-0.50R）vs 共振偏多
+# 28 单 57%（+0.38R）——共振偏空是最强的单一结构负期望信号之一。
+RESONANCE_BEAR_BREAKEVEN_SCORE = -0.5
 # 黄金剥头皮活跃时段（校正 UTC）：伦敦 / 伦敦纽约重叠 / 纽约午盘。
 ACTIVE_SESSION_LABELS = {"london", "london_ny_overlap", "ny_late"}
 
@@ -104,6 +109,52 @@ def resonance_downgrade_reason(resonance: dict[str, object]) -> str | None:
     return f"多周期共振不明确（score {score:+.2f}），方向证据一般"
 
 
+def bear_bias_downgrade_reason(resonance: dict[str, object]) -> str | None:
+    """共振明确偏空时标注：空头方向历史胜率显著低于多头（实证负期望警示）。
+
+    依据（2026-08-07 本地复盘 130 单）：共振偏空 38 单胜率 21%（累计 -0.50R）
+    vs 共振偏多 28 单胜率 57%（+0.38R）；SHORT 方向整体 79 单胜率 30%（-0.18R）
+    vs LONG 51 单胜率 55%（+0.30R）。当结构明确指向空头（score ≤ -0.5）时，
+    除非有极强的宏观/事件证据，空头追入的期望为负——标注供模型与交易者
+    作为"空头需更强证据"的纪律提示（军师模式不阻断方向，保留空头自由度）。
+    只消费已收盘 K 线的确定性 score，缺失/证据不足不标注。
+    """
+    score = resonance.get("score")
+    if not isinstance(score, (int, float)) or score > RESONANCE_BEAR_BREAKEVEN_SCORE:
+        return None
+    return (
+        f"共振明确偏空（score {score:+.2f}）：本地复盘空头胜率显著低于多头"
+        "（SHORT 30% vs LONG 55%），空头建议需更强的宏观/事件证据与更严的风控，"
+        "追空负期望风险高"
+    )
+
+
+def short_bias_downgrade_reason(regime: dict[str, object]) -> str | None:
+    """强趋势市做空实证警示：本地复盘空头期望为负，且趋势确认多头时追空更危险。
+
+    依据（2026-08-07 本地复盘 130 单）：SHORT 方向 79 单胜率 30%（avg_r -0.18），
+    vs LONG 51 单胜率 55%（+0.30R）——空头是本系统当前最深的单一方向负期望。
+    军师模式不阻断空头（保留合法做空自由），但给出实证警示让模型在空头时
+    更严格地要求证据、更紧地设防。只消费确定性 regime 数据，缺失不标注。
+    """
+    if regime.get("available") is not True:
+        return None
+    trend_direction = regime.get("trend_direction")
+    if trend_direction == "buy":
+        # 强趋势多头市做空 = 逆势 + 空头历史弱，双重负期望
+        return (
+            "强趋势多头市（本地复盘空头胜率 30% vs 多头 55%）：逆势做空"
+            "叠加空头历史弱期望，除非有极强宏观/事件证据，追空风险极高"
+        )
+    if trend_direction == "sell":
+        # 强趋势空头市做空 = 顺势但空头历史弱，仍需谨慎
+        return (
+            "强趋势空头市做空：虽顺势，但本地复盘空头胜率 30% 显著低于多头 55%，"
+            "空头建议仍需更强的证据与更严的风控"
+        )
+    return None
+
+
 def regime_downgrade_reason(regime: dict[str, object]) -> str | None:
     """震荡市标注：双周期（M15+H1）ADX 均 < 20 时方向证据不足。
 
@@ -114,6 +165,51 @@ def regime_downgrade_reason(regime: dict[str, object]) -> str | None:
     if regime.get("available") is not True or regime.get("regime") != "ranging":
         return None
     return "市场处于震荡市（双周期 ADX < 20），趋势方向证据不足"
+
+
+# ATR 防追价阈值（king-v2 PriceNotExtended 精华）：价格离 EMA20 超过该倍数
+# ATR 即视为"价格延伸过度"，追价负期望（EA 精华：只吃回调不追价）。
+EMA_EXTENSION_WARN_ATR = 2.5
+
+
+def ema_extension_reason(regime: dict[str, object]) -> str | None:
+    """价格延伸过度标注（king-v2 PriceNotExtended 精华）：禁追价警示。
+
+    king-v2 用 PriceNotExtended 拒绝离均线过远的入场；这里用 EMA20 距离归一化
+    为 ATR 倍数，超过阈值即标注"价格延伸过度，追价风险高"。
+    只消费已收盘 K 线的确定性指标，指标缺失时不标注。
+    """
+    if regime.get("available") is not True:
+        return None
+    extension = regime.get("ema_extension")
+    if not isinstance(extension, dict):
+        return None
+    distance = extension.get("atr_distance")
+    if not isinstance(distance, (int, float)) or distance < EMA_EXTENSION_WARN_ATR:
+        return None
+    side = extension.get("side")
+    side_text = "价格高于 EMA20" if side == "above" else "价格低于 EMA20"
+    return f"价格延伸过度（{side_text} {distance:g} 倍 ATR），追价风险高，宜等回调"
+
+
+def cci_extreme_reason(regime: dict[str, object]) -> str | None:
+    """CCI 轨外标注（恒鑫 EA 精华：±100 轨外不开首单）。
+
+    恒鑫 EA 用 CCI ±100 作为首单过滤：轨外（≥100 或 ≤-100）视为价格延伸过度、
+    回归概率上升，禁开新单。这里转为风险标注（军师模式不阻断分析）。
+    """
+    if regime.get("available") is not True:
+        return None
+    extreme = regime.get("cci_extreme")
+    if not isinstance(extreme, dict):
+        return None
+    side = extreme.get("side")
+    value = extreme.get("value")
+    if side == "overbought" and isinstance(value, (int, float)):
+        return f"CCI {value:.0f} 突破上轨（≥100，恒鑫过滤），价格延伸过度，追多风险高"
+    if side == "oversold" and isinstance(value, (int, float)):
+        return f"CCI {value:.0f} 跌破下轨（≤-100，恒鑫过滤），价格延伸过度，追空风险高"
+    return None
 
 
 def session_downgrade_reason(snapshot: dict[str, object]) -> str | None:
@@ -199,7 +295,11 @@ def evaluate_gate(
         ea_downgrade_reason(ea_status),
         tick_downgrade_reason(tick_health),
         resonance_downgrade_reason(resonance),
+        bear_bias_downgrade_reason(resonance),
         regime_downgrade_reason(regime),
+        short_bias_downgrade_reason(regime),
+        ema_extension_reason(regime),
+        cci_extreme_reason(regime),
         session_downgrade_reason(snapshot),
     ):
         if warn is not None:

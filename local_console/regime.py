@@ -17,6 +17,9 @@ RANGE_ADX_THRESHOLD = 20.0  # 双周期 ADX 均 < 20 → 震荡市（禁强方�
 STDDEV_CONFIRM_THRESHOLD = 1.2  # stddev_20 > 1.2 → 波动放大确认
 RSI_OVERBOUGHT = 85.0  # ≥ 85 → 超买，禁追多（趋势 EA 平多阈值）
 RSI_OVERSOLD = 15.0  # ≤ 15 → 超卖，禁追空
+# CCI 上下轨（恒鑫 EA 精华：±100 轨外不开首单——价格延伸过度，回归概率上升）。
+CCI_BLOCK_UPPER = 100.0  # ≥ 100 → 禁追多
+CCI_BLOCK_LOWER = -100.0  # ≤ -100 → 禁追空
 
 
 def _trend_vote(frame: object) -> int:
@@ -79,7 +82,13 @@ def compute_market_regime(snapshot: dict[str, object]) -> dict[str, object]:
         if not isinstance(frame, dict):
             continue
         entry: dict[str, float] = {}
-        for key, target in (("adx_14", "adx"), ("rsi_14", "rsi"), ("stddev_20", "stddev")):
+        for key, target in (
+            ("adx_14", "adx"),
+            ("rsi_14", "rsi"),
+            ("stddev_20", "stddev"),
+            ("cci_14", "cci"),
+            ("ema_20", "ema_20"),
+        ):
             value = frame.get(key)
             if isinstance(value, (int, float)):
                 entry[target] = float(value)
@@ -114,6 +123,44 @@ def compute_market_regime(snapshot: dict[str, object]) -> dict[str, object]:
                 timeframe, value = min(oversold, key=lambda pair: pair[1])
                 rsi_extreme = {"timeframe": timeframe, "side": "oversold", "value": value}
 
+    # CCI 轨外标记（恒鑫 EA 精华：±100 轨外禁开首单——价格延伸过度）。
+    cci_extreme: dict[str, object] | None = None
+    cci_values = [(tf, entry["cci"]) for tf, entry in frames.items() if "cci" in entry]
+    if cci_values:
+        above = [(tf, v) for tf, v in cci_values if v >= CCI_BLOCK_UPPER]
+        below = [(tf, v) for tf, v in cci_values if v <= CCI_BLOCK_LOWER]
+        if above or below:
+            if above:
+                timeframe, value = max(above, key=lambda pair: pair[1])
+                cci_extreme = {"timeframe": timeframe, "side": "overbought", "value": value}
+            else:
+                timeframe, value = min(below, key=lambda pair: pair[1])
+                cci_extreme = {"timeframe": timeframe, "side": "oversold", "value": value}
+
+    # EMA 延伸度（king-v2 PriceNotExtended 精华）：价格离 EMA20 超过 N×ATR 视为
+    # 价格延伸过度、禁追价。取延伸最远的框架做标注。
+    ema_extension: dict[str, object] | None = None
+    for timeframe in REGIME_TIMEFRAMES:
+        frame = structure.get(timeframe)
+        if not isinstance(frame, dict):
+            continue
+        close = frame.get("close")
+        ema_value = frame.get("ema_20")
+        atr_value = frame.get("atr_14")
+        if not all(isinstance(v, (int, float)) for v in (close, ema_value, atr_value)):
+            continue
+        atr_value = float(atr_value)
+        if atr_value <= 0:
+            continue
+        extension = abs(float(close) - float(ema_value)) / atr_value
+        if ema_extension is None or extension > float(ema_extension["atr_distance"]):
+            side = "above" if float(close) > float(ema_value) else "below"
+            ema_extension = {
+                "timeframe": timeframe,
+                "side": side,
+                "atr_distance": round(extension, 2),
+            }
+
     volatility_confirmed = any(
         entry.get("stddev", 0.0) > STDDEV_CONFIRM_THRESHOLD
         for entry in frames.values()
@@ -135,7 +182,10 @@ def compute_market_regime(snapshot: dict[str, object]) -> dict[str, object]:
         "adx": adx_values,
         "rsi": {tf: entry["rsi"] for tf, entry in frames.items() if "rsi" in entry},
         "stddev": {tf: entry["stddev"] for tf, entry in frames.items() if "stddev" in entry},
+        "cci": {tf: entry["cci"] for tf, entry in frames.items() if "cci" in entry},
         "volatility_confirmed": volatility_confirmed,
         "rsi_extreme": rsi_extreme,
-        "note": "确定性事实：由已收盘K线 ADX/StdDev/RSI 复算的市场状态，非模型推断。",
+        "cci_extreme": cci_extreme,
+        "ema_extension": ema_extension,
+        "note": "确定性事实：由已收盘K线 ADX/StdDev/RSI/CCI/EMA 复算的市场状态，非模型推断。",
     }

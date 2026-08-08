@@ -51,7 +51,21 @@ VISIBLE_TEXT_KEYS = ("summary", "invalidation", "next_observation")
 #       scalp 只吃回调不追价：入场必须与共振同向、M5 回调到区间低位/高位
 #       （range_location_8 由已收盘 K 线确定性计算）；TP 快速止盈 1:1.0-1:1.5
 #       （回测 TP=1.0/SL=0.8ATR 胜率 71.3% vs 追价 -0.43R）。
-PROMPT_VERSION = "1.8.0"
+# 1.9.0：EA 精华扩展（168EA 文件夹提炼，2026-08-06）——
+#       fractal_levels（Gold Trade Pro 日线分形突破位：BUYSTOP/SELLSTOP 参考位）；
+#       signal_votes（king-v2 多策略投票：趋势/突破/回调/MACD 四类信号共识）；
+#       macd_divergence（MACD 背离指示器精华：价格新高 MACD 未新高=顶背离警示）；
+#       market_regime 扩展（恒鑫 CCI ±100 轨外禁追 + king-v2 EMA 延伸度防追价）。
+# 1.10.0：金麒麟单边行情哨兵（jinqilin_sentinel）——为金麒麟类双向网格马丁
+#        EA 提供外部风险预警：强趋势同向/波动放大/区间边缘/背离/新闻窗口/
+#        点差高位 累加为 risk_level（LOW~CRITICAL），军师须在报告中如实呈现。
+# 1.11.0：深度复盘辩论人格注入（2026-08-07）——DEBATE_TEAM 三家注入互补投资哲学
+#        persona（量化纪律 / 宏观对冲 / 安全边际），仅作视角增强，不改变 JSON 契约。
+# 1.12.0：指标去重 + 方向冲突裁决（2026-08-07）——P1 去重 signal_votes.trend
+#        （与 timeframe_resonance 同一算法，不得重复计权）；P0 新增方向冲突裁决
+#        优先级（trend_direction > resonance > signal_votes 独立共识 > macd_divergence），
+#        消除多个确定性方向事实冲突时模型靠猜的问题。
+PROMPT_VERSION = "1.12.0"
 
 # 各模式的纪律参数（report_validation 复用同一张表，保证 prompt 与验收一致）。
 MODE_RULES: dict[str, dict[str, object]] = {
@@ -148,6 +162,10 @@ def allowed_source_ids(snapshot: dict[str, object] | None = None) -> set[str]:
         "atr",
         "option_iv",
         "session_context",  # A1 交易时段（确定性时间函数，2026-08-02 注入）
+        "fractal_levels",  # EA 精华：Gold Trade Pro 日线分形突破位（2026-08-06）
+        "signal_votes",  # EA 精华：king-v2 多策略投票共识（2026-08-06）
+        "macd_divergence",  # EA 精华：MACD 背离警示（2026-08-06）
+        "jinqilin_sentinel",  # 金麒麟单边行情哨兵（2026-08-06）
     }
     # 军师模式：gate.action 恒为 ANALYSE（除 BLOCKED），是否允许引用事件日历
     # 取决于快照中事件上下文是否已核验（未核验不得声称具体事件，真实性保底）。
@@ -327,6 +345,115 @@ def build_prompt(
         if regime.get("volatility_confirmed") is True:
             regime_rule += " 波动放大（StdDev 超阈值），止盈/止损与仓位应更保守。"
         output_rules.append(regime_rule)
+    # P0 方向冲突裁决优先级（2026-08-07）：当多个确定性方向事实互相矛盾时，
+    # 模型必须按固定优先级裁决，不得靠猜测或随机。粒度从高时间框架到动能警示。
+    _dir_facts_present = {
+        "regime_trend": isinstance(regime, dict) and regime.get("available") is True
+        and regime.get("regime") == "trending" and regime.get("trend_direction"),
+        "resonance": isinstance(resonance, dict) and resonance.get("available") is True
+        and isinstance(resonance.get("score"), (int, float)),
+    }
+    if any(_dir_facts_present.values()):
+        output_rules.append(
+            "方向冲突裁决规则（当下列确定性方向事实互相矛盾时的固定优先级，不得靠猜）："
+            "① market_regime.trend_direction（高时间框架强趋势，ADX≥25，权重最高）"
+            "＞ ② timeframe_resonance.score（多时间框架加权共振）"
+            "＞ ③ signal_votes 剔除 trend 后的独立共识"
+            "＞ ④ macd_divergence（背离只是动能减弱警示，不构成方向结论）。"
+            "direction 以优先级高的为准；低优先级事实与高优先级矛盾时，"
+            "在 risk_note 中如实说明该冲突（如'共振偏多但强趋势偏空，以趋势为准'），"
+            "不得悄然忽略任何已提供的确定性事实。"
+        )
+    fractal = snapshot.get("fractal_levels")
+    if isinstance(fractal, dict) and fractal.get("available") is True:
+        nearest_buy = fractal.get("nearest_buy")
+        nearest_sell = fractal.get("nearest_sell")
+        parts = [
+            "fractal_levels 是由已收盘日线分形高低点复算的突破参考位"
+            "（Gold Trade Pro 精华，非模型推断）："
+        ]
+        if isinstance(nearest_buy, (int, float)):
+            parts.append(
+                f"上方分形突破位 {nearest_buy:.2f}（价格升破该位才有做多突破依据，未破前不追）"
+            )
+        if isinstance(nearest_sell, (int, float)):
+            parts.append(
+                f"下方分形突破位 {nearest_sell:.2f}（价格跌破该位才有做空突破依据，未破前不追）"
+            )
+        if not parts[1:]:
+            parts.append("当前无有效分形突破位（价格距分形位不足最小突破距离）")
+        parts.append("分形位是结构参考，不替代共振/关键价位判断；入场仍须贴关键价位")
+        output_rules.append("；".join(parts))
+    signal_votes = snapshot.get("signal_votes")
+    if isinstance(signal_votes, dict) and signal_votes.get("available") is True:
+        consensus = signal_votes.get("consensus")
+        signals = signal_votes.get("signals")
+        label = signal_votes.get("label")
+        if isinstance(consensus, (int, float)) and isinstance(signals, dict):
+            signal_text = "、".join(
+                f"{name}={'多' if vote > 0 else '空' if vote < 0 else '中性'}"
+                for name, vote in signals.items()
+            )
+            # P1 去重（2026-08-07）：signal_votes 的 trend 信号与 timeframe_resonance
+            # 用同一套权重与投票函数计算，二者等价——模型不得把同一信号计两次，
+            # 须剔除 trend 后只看突破/回调/MACD 三票的 consensus 作为独立补充证据。
+            non_trend_votes = [
+                vote for name, vote in signals.items()
+                if name != "trend" and vote != 0
+            ]
+            independent_consensus: float | None = None
+            if non_trend_votes:
+                independent_consensus = round(sum(non_trend_votes) / len(non_trend_votes), 3)
+            output_rules.append(
+                "signal_votes 是多策略信号投票共识（king-v2 精华，非模型推断）："
+                f"{label}（consensus {consensus:+.2f}）。各策略票：{signal_text}。"
+                "注意：其中的 trend 票与 timeframe_resonance 是同一信号（同一权重与投票算法），"
+                "不得重复计权；判断方向时以 timeframe_resonance 为准，signal_votes 仅作为"
+                + (
+                    f"突破/回调/MACD 的独立共识（剔除 trend 后 consensus {independent_consensus:+.2f}）"
+                    if independent_consensus is not None
+                    else "突破/回调/MACD 的独立参考（剔除 trend 后无有效信号）"
+                )
+                + " 补充证据。direction 应尽量与 timeframe_resonance 一致；"
+                "consensus 接近 0 或多策略分歧时宜倾向 NEUTRAL 并在 risk_note 说明分歧点。"
+            )
+    divergence = snapshot.get("macd_divergence")
+    if isinstance(divergence, dict) and divergence.get("available") is True:
+        any_div = divergence.get("any_divergence")
+        details = divergence.get("divergences")
+        if any_div is True and isinstance(details, dict):
+            active = [
+                f"{tf} 出现{entry.get('label') if isinstance(entry, dict) else '背离'}"
+                for tf, entry in details.items()
+                if isinstance(entry, dict) and entry.get("side") in ("bearish", "bullish")
+            ]
+            if active:
+                output_rules.append(
+                    "macd_divergence 是由已收盘K线复算的背离警示（非模型推断）："
+                    + "、".join(active)
+                    + "。背离是动能减弱的警示，不构成反向进场信号——"
+                    "若 direction 与背离方向一致（如顶背离仍做多），必须在 risk_note 说明"
+                    "为什么动能减弱仍追多（风险标注，不拒绝）。"
+                )
+    sentinel = snapshot.get("jinqilin_sentinel")
+    if isinstance(sentinel, dict) and sentinel.get("available") is True:
+        risk_level = sentinel.get("risk_level")
+        score = sentinel.get("risk_score")
+        flags = sentinel.get("flags")
+        advice = sentinel.get("advice")
+        parts = [
+            "jinqilin_sentinel 是金麒麟类网格马丁 EA 的单边行情风险哨兵"
+            "（由已收盘K线共振/市场状态/背离/点差/新闻窗口确定性复算）："
+        ]
+        if isinstance(risk_level, str) and isinstance(score, (int, float)):
+            parts.append(f"当前风险等级 {risk_level}（{score} 分/10）")
+        if isinstance(flags, list) and flags:
+            parts.append("命中信号：" + "、".join(str(f) for f in flags[:6]))
+        if isinstance(advice, str):
+            parts.append(f"建议：{advice}")
+        parts.append("哨兵只作风险预警；若报告中方向建议与哨兵等级为 HIGH/CRITICAL 相悖，"
+                     "必须在 risk_note 说明为何无视单边行情预警（风险标注，不拒绝）")
+        output_rules.append("；".join(parts))
     news = snapshot.get("news_context")
     if isinstance(news, dict) and news.get("status") == "ok" and news.get("items"):
         output_rules.append(
@@ -518,10 +645,11 @@ def build_debate_prompt(
     focus: str,
     round_no: int,
     others: list[dict[str, object]] | None = None,
+    persona: str | None = None,
 ) -> str:
     """构造辩论 prompt：第 1 轮独立分析，第 2/3 轮交叉质疑。
 
-    第 1 轮：完整报告契约（复用 build_prompt 的规则），附加视角定位；
+    第 1 轮：完整报告契约（复用 build_prompt 的规则），附加视角定位与可选人格注入；
     第 2 轮：看到另两家第 1 轮内容，输出"坚持/修正/分歧点"立场声明（JSON）；
     第 3 轮：分歧收敛，最终立场（JSON）。
     """
@@ -530,6 +658,9 @@ def build_debate_prompt(
         contract = json.loads(base)
         contract["role"] = f"XAU 深度复盘辩论成员（{role}）"
         contract["focus"] = focus
+        # persona（2026-08-07）：互补投资哲学视角强化，仅影响分析取向，不新增输出字段
+        if persona:
+            contract["persona"] = persona
         contract["output_rules"] = contract["output_rules"] + [
             f"你的专属视角：{focus}。在完整分析的同时，必须从你的视角给出独特观点，"
             "与其他视角形成互补而非复述。",

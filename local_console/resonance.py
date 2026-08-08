@@ -36,6 +36,104 @@ def _timeframe_vote(frame: object) -> int:
     return body_vote if body_vote == momentum_vote else 0
 
 
+def compute_signal_votes(snapshot: dict[str, object]) -> dict[str, object]:
+    """多策略方向投票（king-v2 多策略投票引擎精华的轻量版）。
+
+    king-v2 用 9+ 信号（突破/回调/挤压/Supertrend/Vegas/MACD/Keltner/Ichimoku…）
+    各自投票、多数一致才开仓。这里用快照里已具备的确定性字段实现 4 类信号：
+        trend    趋势跟随：K 线方向与 4 根动量同号才投票（复用 _timeframe_vote）
+        breakout 突破信号：breakout_up/breakout_down（区间前高/前低突破）
+        pullback 回调信号：range_location_8 极性（低位做多/高位做空的前提）
+        macd     动量信号：macd_histogram 正负（h1 优先，m15 兜底）
+    每类信号按时间框架权重汇总为一票，再聚合 consensus∈[-1,1]。
+    与 compute_resonance 的区别：共振按"时间框架"投票，本函数按"策略类型"投票。
+    """
+    structure = snapshot.get("timeframe_structure")
+    if not isinstance(structure, dict) or not structure:
+        return {"available": False, "reason": "快照缺少 timeframe_structure"}
+
+    # 1) trend：复用各框架 _timeframe_vote，加权为净方向。
+    weighted_sum = 0.0
+    total_weight = 0
+    for timeframe, weight in TIMEFRAME_WEIGHTS.items():
+        frame = structure.get(timeframe)
+        if isinstance(frame, dict):
+            vote = _timeframe_vote(frame)
+            weighted_sum += vote * weight
+            total_weight += weight
+    trend_vote = round(weighted_sum / total_weight, 3) if total_weight else 0.0
+
+    # 2) breakout：h1 优先、m15 兜底（更高框架的区间突破更可靠）。
+    breakout_vote = 0
+    for timeframe in ("h1", "m15", "m5"):
+        frame = structure.get(timeframe)
+        if not isinstance(frame, dict):
+            continue
+        if frame.get("breakout_up") is True:
+            breakout_vote = 1
+            break
+        if frame.get("breakout_down") is True:
+            breakout_vote = -1
+            break
+
+    # 3) pullback：range_location_8 在区间低位偏多、高位偏空（回调入场前提）。
+    pullback_vote = 0
+    for timeframe in ("h1", "m15", "m5"):
+        frame = structure.get(timeframe)
+        if not isinstance(frame, dict) or not isinstance(frame.get("range_location_8"), (int, float)):
+            continue
+        location = float(frame["range_location_8"])
+        if location <= 0.3:
+            pullback_vote = 1
+        elif location >= 0.7:
+            pullback_vote = -1
+        break
+
+    # 4) macd：柱值正负即方向（h1 优先、m15/m5 兜底）。
+    macd_vote = 0
+    for timeframe in ("h1", "m15", "m5"):
+        frame = structure.get(timeframe)
+        if not isinstance(frame, dict) or not isinstance(frame.get("macd_histogram"), (int, float)):
+            continue
+        histogram = float(frame["macd_histogram"])
+        if histogram > 0:
+            macd_vote = 1
+        elif histogram < 0:
+            macd_vote = -1
+        break
+
+    signals: dict[str, int] = {
+        "trend": 1 if trend_vote > 0 else -1 if trend_vote < 0 else 0,
+        "breakout": breakout_vote,
+        "pullback": pullback_vote,
+        "macd": macd_vote,
+    }
+    voting = [vote for vote in signals.values() if vote != 0]
+    if not voting:
+        return {
+            "available": True,
+            "signals": signals,
+            "consensus": 0.0,
+            "label": "无信号一致",
+            "note": "确定性事实：多策略信号投票（king-v2 精华），当前无有效信号。",
+        }
+    consensus = round(sum(voting) / len(voting), 3)
+    if consensus >= 0.5:
+        label = "多策略一致偏多"
+    elif consensus <= -0.5:
+        label = "多策略一致偏空"
+    else:
+        label = "多策略分歧"
+    return {
+        "available": True,
+        "signals": signals,
+        "consensus": consensus,
+        "label": label,
+        "voting_signals": len(voting),
+        "note": "确定性事实：多策略信号投票（趋势/突破/回调/MACD），非模型推断。",
+    }
+
+
 def compute_resonance(snapshot: dict[str, object]) -> dict[str, object]:
     """从快照的 timeframe_structure 计算方向共振事实。
 

@@ -9,9 +9,12 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from .brief import PROMPT_VERSION
+from .fractal_levels import compute_fractal_levels
 from .guard import GateResult, evaluate_gate
+from .jinqilin_sentinel import compute_jinqilin_sentinel
+from .macd_divergence import compute_macd_divergence
 from .regime import compute_market_regime
-from .resonance import compute_resonance
+from .resonance import compute_resonance, compute_signal_votes
 from .snapshot_facts import _key_levels
 
 
@@ -99,11 +102,95 @@ def build_gate_payload(
             "label": regime.get("label"),
             "trend_direction": regime.get("trend_direction"),
             "rsi_extreme": regime.get("rsi_extreme"),
+            "cci_extreme": regime.get("cci_extreme"),
+            "ema_extension": regime.get("ema_extension"),
             "volatility_confirmed": regime.get("volatility_confirmed"),
         },
+        "fractal_levels": _fractal_summary(snapshot),
+        "signal_votes": _signal_summary(snapshot),
+        "macd_divergence": _divergence_summary(snapshot),
+        "jinqilin_sentinel": _sentinel_summary(
+            snapshot, tick_health, event_context, iv_context, resonance, regime
+        ),
         "iv": _iv_summary(iv_context),
     }
     return gate, gate_payload, resonance, regime
+
+
+def _sentinel_summary(
+    snapshot: dict[str, object],
+    tick_health: dict[str, object],
+    event_context: dict[str, object],
+    iv_context: dict[str, object] | None,
+    resonance: dict[str, object],
+    regime: dict[str, object],
+) -> dict[str, object] | None:
+    """金麒麟单边行情哨兵前端摘要：风险等级 / 分数 / 命中信号 / 建议。"""
+    sentinel = compute_jinqilin_sentinel(
+        snapshot,
+        resonance=resonance,
+        regime=regime,
+        tick_health=tick_health,
+        event_context=event_context,
+        iv_context=iv_context,
+    )
+    if sentinel.get("available") is not True:
+        return None
+    return {
+        "available": True,
+        "risk_level": sentinel.get("risk_level"),
+        "risk_score": sentinel.get("risk_score"),
+        "flags": sentinel.get("flags"),
+        "advice": sentinel.get("advice"),
+    }
+
+
+def _fractal_summary(snapshot: dict[str, object]) -> dict[str, object] | None:
+    """分形突破位前端摘要：只落展示所需字段（最近买/卖突破位 + ATR）。"""
+    levels = compute_fractal_levels(snapshot)
+    if levels.get("available") is not True:
+        return None
+    return {
+        "available": True,
+        "nearest_buy": levels.get("nearest_buy"),
+        "nearest_sell": levels.get("nearest_sell"),
+        "buy_levels": levels.get("buy_levels"),
+        "sell_levels": levels.get("sell_levels"),
+        "reference_atr": levels.get("reference_atr"),
+    }
+
+
+def _signal_summary(snapshot: dict[str, object]) -> dict[str, object] | None:
+    """多策略投票前端摘要：只落共识与各信号票。"""
+    votes = compute_signal_votes(snapshot)
+    if votes.get("available") is not True:
+        return None
+    return {
+        "available": True,
+        "consensus": votes.get("consensus"),
+        "label": votes.get("label"),
+        "signals": votes.get("signals"),
+    }
+
+
+def _divergence_summary(snapshot: dict[str, object]) -> dict[str, object] | None:
+    """MACD 背离前端摘要：只落各框架背离标记。"""
+    divergence = compute_macd_divergence(snapshot)
+    if divergence.get("available") is not True:
+        return None
+    return {
+        "available": True,
+        "any_divergence": divergence.get("any_divergence"),
+        "divergences": {
+            tf: {
+                "side": entry.get("side"),
+                "label": entry.get("label"),
+            }
+            if isinstance(entry, dict)
+            else None
+            for tf, entry in divergence.get("divergences", {}).items()
+        },
+    }
 
 
 def _iv_summary(iv_context: dict[str, object] | None) -> dict[str, object] | None:
@@ -145,6 +232,26 @@ def build_facts(
     facts["timeframe_resonance"] = resonance
     facts["market_regime"] = regime
     facts["news_context"] = news
+    # EA 精华新事实（2026-08-06）：分形突破位 / 多策略投票 / MACD 背离。
+    fractal = compute_fractal_levels(snapshot)
+    if fractal.get("available") is True:
+        facts["fractal_levels"] = fractal
+    signal_votes = compute_signal_votes(snapshot)
+    if signal_votes.get("available") is True:
+        facts["signal_votes"] = signal_votes
+    divergence = compute_macd_divergence(snapshot)
+    if divergence.get("available") is True:
+        facts["macd_divergence"] = divergence
+    sentinel = compute_jinqilin_sentinel(
+        snapshot,
+        resonance=resonance,
+        regime=regime,
+        tick_health=tick_health,
+        event_context=event_context,
+        iv_context=iv_context,
+    )
+    if sentinel.get("available") is True:
+        facts["jinqilin_sentinel"] = sentinel
     if iv_context is not None:
         facts["option_iv"] = iv_context
     return facts

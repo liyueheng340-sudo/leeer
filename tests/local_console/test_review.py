@@ -9,6 +9,7 @@ from local_console.config import ConsoleConfig
 from local_console.jobs import JobStore
 from local_console.review import (
     compute_context_stats,
+    compute_forward_validation,
     compute_review_stats,
     due_for_review,
     evaluate_plan,
@@ -341,6 +342,137 @@ class ContextStatsTests(unittest.TestCase):
 
         self.assertEqual({}, contexts["by_gate_action"])
         self.assertIn("不构成", contexts["disclaimer"])
+
+
+class ForwardValidationTests(unittest.TestCase):
+    """2026-08-07：前向验证——最近窗口 vs 更早窗口的期望 R 对比。"""
+
+    def make_config(self, root: Path) -> ConsoleConfig:
+        return ConsoleConfig(
+            repo_root=root,
+            state_dir=root / "runtime",
+            mt5_python=root / "python.exe",
+            mt5_snapshot_script=root / "snapshot.py",
+            backend_url=None,
+            quick_model="quick",
+            deep_model="deep",
+        )
+
+    def _job_with(self, store: JobStore, created: datetime, outcome: str, r: float | None) -> None:
+        job = store.create("brief")
+        record = store.get(job.id)
+        record.stage = "COMPLETE"
+        record.created_at = created.isoformat()
+        record.report = long_plan()
+        record.review = {"outcome": outcome, "r_multiple": r}
+        store._write(record)
+
+    def test_splits_recent_and_earlier_windows(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = JobStore(Path(directory))
+            base = datetime(2026, 7, 1, 12, 0, tzinfo=UTC)
+            # 更早 10 单：全亏
+            for i in range(10):
+                self._job_with(store, base + timedelta(hours=i), "SL_FIRST", -1.0)
+            # 最近 10 单：全赢
+            for i in range(10):
+                self._job_with(store, base + timedelta(days=1, hours=i), "TP_FIRST", 1.0)
+
+            result = compute_forward_validation(store.list_recent(), recent_n=10)
+
+        self.assertEqual(10, result["recent_n"])
+        self.assertEqual(10, result["earlier_n"])
+        self.assertEqual(1.0, result["recent"]["avg_r"])
+        self.assertEqual(-1.0, result["earlier"]["avg_r"])
+        self.assertEqual(1.0, result["recent"]["win_rate"])
+        self.assertEqual(0.0, result["earlier"]["win_rate"])
+
+    def test_no_decided_is_empty(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = JobStore(Path(directory))
+            self._job_with(store, CREATED, "PENDING", None)
+
+            result = compute_forward_validation(store.list_recent())
+
+        self.assertEqual(0, result["recent_n"])
+        self.assertEqual(0, result["earlier_n"])
+        self.assertIn("暂无", result["note"])
+
+    def test_non_tp_sl_outcomes_are_excluded(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = JobStore(Path(directory))
+            self._job_with(store, CREATED, "NOT_TRIGGERED", None)
+            self._job_with(store, CREATED, "TP_FIRST", 2.0)
+
+            result = compute_forward_validation(store.list_recent(), recent_n=5)
+
+        self.assertEqual(1, result["recent_n"])
+        self.assertEqual(2.0, result["recent"]["avg_r"])
+
+
+class DirectionQualityTests(unittest.TestCase):
+    """2026-08-07 P0：方向判定 + 方向×结果四分格。"""
+
+    def test_long_direction_correct_when_moves_up_beyond_threshold(self):
+        # LONG risk=15, 阈值=7.5。high 触及 4010(≥4007.5) 但随后被扫损 → 方向对但点位差
+        bars = [bar(0, 4001, 3999, 4000), bar(5, 4010, 4002, 4005), bar(10, 4004, 3984, 3986)]
+        review = evaluate_plan(long_plan(), bars, CREATED, NOW)
+
+        self.assertEqual("SL_FIRST", review["outcome"])  # 被扫损
+        self.assertTrue(review["direction_correct"])  # 但方向看对了
+
+    def test_long_direction_wrong_when_never_advances(self):
+        # 从未向 LONG 方向移动 ≥7.5 → 方向错
+        bars = [bar(0, 4001, 3999, 4000), bar(5, 4002, 3984, 3986)]
+        review = evaluate_plan(long_plan(), bars, CREATED, NOW)
+
+        self.assertEqual("SL_FIRST", review["outcome"])
+        self.assertFalse(review["direction_correct"])
+
+    def test_short_direction_correct_when_moves_down(self):
+        # 构造 SHORT plan：entry_mid=4000, TP=3985, SL=4015, risk=15, 阈值=7.5
+        plan = {
+            "direction": "SHORT", "entry_lo": 3995.0, "entry_hi": 4005.0,
+            "entry_mid": 4000.0, "take_profit": 3985.0, "stop_loss": 4015.0,
+        }
+        # 先向下触及 3992(方向对,≥7.5 无非), 再反弹被 4015 SL 扫 → 方向对但点位差
+        bars = [bar(0, 4001, 3999, 4000), bar(5, 3998, 3992, 3995), bar(10, 4016, 4000, 4014)]
+        review = evaluate_plan(plan, bars, CREATED, NOW)
+
+        self.assertEqual("SL_FIRST", review["outcome"])
+        self.assertTrue(review["direction_correct"])
+
+    def test_quadrant_stats(self):
+        from local_console.review import compute_direction_quality
+
+        with tempfile.TemporaryDirectory() as directory:
+            store = JobStore(Path(directory))
+            # 方向对+TP
+            self._job_with(store, CREATED, "TP_FIRST", 1.0, dc=True)
+            # 方向对+SL（点位差）
+            self._job_with(store, CREATED, "SL_FIRST", None, dc=True)
+            # 方向错+TP（运气）
+            self._job_with(store, CREATED, "TP_FIRST", 2.0, dc=False)
+            # 方向错+SL（真失败）
+            self._job_with(store, CREATED, "SL_FIRST", None, dc=False)
+
+            result = compute_direction_quality(store.list_recent())
+
+        self.assertEqual(1, result["dir_correct_tp"]["n"])
+        self.assertEqual(1, result["dir_correct_sl"]["n"])
+        self.assertEqual(1, result["dir_wrong_tp"]["n"])
+        self.assertEqual(1, result["dir_wrong_sl"]["n"])
+        self.assertEqual(0.5, result["direction_correct_rate"])
+
+    # 复用 ForwardValidationTests 的 _job_with（需支持 dc 参数）
+    def _job_with(self, store, created, outcome, r, dc=True):
+        job = store.create("brief")
+        record = store.get(job.id)
+        record.stage = "COMPLETE"
+        record.created_at = created.isoformat()
+        record.report = long_plan()
+        record.review = {"outcome": outcome, "r_multiple": r, "direction_correct": dc}
+        store._write(record)
 
 
 if __name__ == "__main__":

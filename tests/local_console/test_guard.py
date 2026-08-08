@@ -308,3 +308,85 @@ class RegimeDowngradeTests(unittest.TestCase):
 
         self.assertEqual("ANALYSE", result.action)
         self.assertEqual((), result.warnings)
+
+
+class BiasDowngradeTests(unittest.TestCase):
+    """2026-08-07：空头实证负期望标注（本地复盘 130 单：SHORT 30% vs LONG 55%）。"""
+
+    def snapshot_with_structure(self, structure: dict[str, object]) -> dict[str, object]:
+        snapshot = fresh_snapshot()
+        snapshot["timeframe_structure"] = structure
+        return snapshot
+
+    def test_bear_resonance_adds_warning(self):
+        # h4+h1+m15 全空 → score=-1.0 ≤ -0.5 → 共振明确偏空 → bear_bias 标注
+        snapshot = self.snapshot_with_structure({
+            "h4": {"body_direction": "sell", "change_4": -1.0},
+            "h1": {"body_direction": "sell", "change_4": -1.0},
+            "m15": {"body_direction": "sell", "change_4": -1.0},
+        })
+
+        result = evaluate_gate(
+            snapshot, {"status": "verified_clear"}, NOW, healthy_tick()
+        )
+
+        self.assertEqual("ANALYSE", result.action)
+        self.assertTrue(result.directional_plan_allowed)  # 军师模式保留方向
+        self.assertTrue(has_warning(result.warnings, "共振明确偏空"))
+        self.assertTrue(has_warning(result.warnings, "空头胜率显著低于多头"))
+
+    def test_bull_resonance_no_bear_warning(self):
+        # 全多 → score=+1.0 → 偏多，不触发偏空标注
+        snapshot = self.snapshot_with_structure({
+            "h4": {"body_direction": "buy", "change_4": 1.0},
+            "h1": {"body_direction": "buy", "change_4": 1.0},
+            "m15": {"body_direction": "buy", "change_4": 1.0},
+        })
+
+        result = evaluate_gate(
+            snapshot, {"status": "verified_clear"}, NOW, healthy_tick()
+        )
+
+        self.assertNotIn("共振明确偏空", result.warnings)
+        self.assertNotIn("空头胜率", result.warnings)
+
+    def test_strong_bull_trend_inverse_short_warning(self):
+        # m15+h1 强多趋势 → trending + direction=buy → 逆势做空警示
+        snapshot = self.snapshot_with_structure({
+            "m15": {"body_direction": "buy", "change_4": 1.0, "adx_14": 30.0},
+            "h1": {"body_direction": "buy", "change_4": 1.0, "adx_14": 28.0},
+        })
+
+        result = evaluate_gate(
+            snapshot, {"status": "verified_clear"}, NOW, healthy_tick()
+        )
+
+        self.assertTrue(has_warning(result.warnings, "逆势做空"))
+        self.assertTrue(has_warning(result.warnings, "空头胜率 30%"))
+
+    def test_strong_bear_trend_with_short_warning(self):
+        # m15+h1 强空趋势 → trending + direction=sell → 顺势做空警示（空头历史弱）
+        snapshot = self.snapshot_with_structure({
+            "m15": {"body_direction": "sell", "change_4": -1.0, "adx_14": 30.0},
+            "h1": {"body_direction": "sell", "change_4": -1.0, "adx_14": 28.0},
+        })
+
+        result = evaluate_gate(
+            snapshot, {"status": "verified_clear"}, NOW, healthy_tick()
+        )
+
+        self.assertTrue(has_warning(result.warnings, "强趋势空头市做空"))
+        self.assertTrue(has_warning(result.warnings, "空头胜率 30%"))
+
+    def test_no_adx_no_short_warning(self):
+        # 无 ADX → regime 不可用 → 不触发 short_bias
+        snapshot = self.snapshot_with_structure({
+            "m15": {"body_direction": "sell", "change_4": -1.0},
+            "h1": {"body_direction": "sell", "change_4": -1.0},
+        })
+
+        result = evaluate_gate(
+            snapshot, {"status": "verified_clear"}, NOW, healthy_tick()
+        )
+
+        self.assertNotIn("空头胜率", result.warnings)
