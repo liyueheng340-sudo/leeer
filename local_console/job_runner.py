@@ -139,6 +139,7 @@ def run_job(service: object, job_id: str) -> None:
             event_context=event_context,
             iv_context=iv_context,
             mode=record.mode,
+            expected_symbol=service.config.symbol,
         )
         # 连亏熔断（方案 B 动态风控，2026-08-07）：读最近已判定 review，
         # 连续 N 单 SL_FIRST 后禁方向建议（保留分析，符合宪法"军师不锁分析"）。

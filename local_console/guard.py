@@ -259,8 +259,13 @@ def evaluate_gate(
     resonance: dict[str, object] | None = None,
     regime: dict[str, object] | None = None,
     mode: str = "scalp",
+    expected_symbol: str = "XAUUSD",
 ) -> GateResult:
-    if snapshot.get("identity_match") is not True or snapshot.get("symbol") != "XAUUSD":
+    # 品种名比较大小写不敏感（MT5 经纪商符号可能为 XAUUSD.s / xauusd.s 等变体）。
+    if (
+        snapshot.get("identity_match") is not True
+        or str(snapshot.get("symbol") or "").upper() != expected_symbol.upper()
+    ):
         return GateResult("BLOCKED", False, False, "MT5 经纪商或品种身份不匹配")
     if not valid_quote(snapshot):
         return GateResult("BLOCKED", False, False, "MT5 报价不可用")

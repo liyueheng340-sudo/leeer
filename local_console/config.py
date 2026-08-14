@@ -43,6 +43,9 @@ class ConsoleConfig:
     # 默认 900 秒（15 分钟）对齐看 M15/H1 收盘的交易节奏，而非每分钟刷简报。
     auto_interval_seconds: int = 900
     auto_enabled_default: bool = False
+    # MT5 品种名：不同经纪商对黄金命名不同（如 XAUUSD / XAUUSD.s / xauusd.s）。
+    # 默认 XAUUSD；经 XAU_CONSOLE_SYMBOL 覆盖为经纪商实际符号。
+    symbol: str = "XAUUSD"
     # EA 风险态接入（接口 B）：默认 None = 关闭（直接构造配置时保守关闭）；
     # from_repo 才按环境变量/默认路径开启。陈旧阈值默认 120 秒（EA 约 30 秒写一次）。
     ea_status_path: Path | None = None
@@ -78,6 +81,7 @@ class ConsoleConfig:
             auto_interval_seconds=int(os.environ.get("XAU_CONSOLE_AUTO_INTERVAL_SECONDS", "900")),
             auto_enabled_default=os.environ.get("XAU_CONSOLE_AUTO_ENABLED", "").strip().lower()
             in ("1", "true", "yes", "on"),
+            symbol=os.environ.get("XAU_CONSOLE_SYMBOL", "XAUUSD").strip() or "XAUUSD",
             ea_status_path=_ea_status_path_from_env(),
             ea_status_max_age_seconds=float(
                 os.environ.get("XAU_CONSOLE_EA_STATUS_MAX_AGE", "120")

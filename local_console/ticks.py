@@ -31,7 +31,7 @@ def capture_tick_health(config: ConsoleConfig, job_id: str) -> dict[str, object]
         str(config.mt5_python),
         str(config.tick_script_path),
         "--symbol",
-        "XAUUSD",
+        config.symbol,
         "--output",
         str(output),
     ]

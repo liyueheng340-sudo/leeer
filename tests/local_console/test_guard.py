@@ -394,3 +394,54 @@ class BiasDowngradeTests(unittest.TestCase):
         )
 
         self.assertNotIn("空头胜率", result.warnings)
+
+    def test_symbol_variant_case_insensitive_accepted(self):
+        # 经纪商符号大小写变体（xauusd）：默认期望 XAUUSD，比较大小写不敏感
+        snapshot = fresh_snapshot()
+        snapshot["symbol"] = "xauusd"
+
+        result = evaluate_gate(
+            snapshot, {"status": "verified_clear"}, NOW, healthy_tick()
+        )
+
+        self.assertNotEqual("BLOCKED", result.action)
+
+    def test_symbol_mismatch_blocked(self):
+        snapshot = fresh_snapshot()
+        snapshot["symbol"] = "EURUSD"
+
+        result = evaluate_gate(
+            snapshot, {"status": "verified_clear"}, NOW, healthy_tick()
+        )
+
+        self.assertEqual("BLOCKED", result.action)
+        self.assertEqual("MT5 经纪商或品种身份不匹配", result.reason)
+
+    def test_expected_symbol_override(self):
+        # 自定义经纪商符号：快照 XAUUSD.s 配 expected_symbol=xauusd.s（大小写不同）应通过
+        snapshot = fresh_snapshot()
+        snapshot["symbol"] = "XAUUSD.s"
+
+        result = evaluate_gate(
+            snapshot,
+            {"status": "verified_clear"},
+            NOW,
+            healthy_tick(),
+            expected_symbol="xauusd.s",
+        )
+
+        self.assertNotEqual("BLOCKED", result.action)
+
+    def test_expected_symbol_mismatch_blocked(self):
+        snapshot = fresh_snapshot()
+        snapshot["symbol"] = "XAUUSD.s"
+
+        result = evaluate_gate(
+            snapshot,
+            {"status": "verified_clear"},
+            NOW,
+            healthy_tick(),
+            expected_symbol="XAUUSD",
+        )
+
+        self.assertEqual("BLOCKED", result.action)

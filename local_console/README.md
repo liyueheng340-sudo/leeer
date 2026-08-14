@@ -73,6 +73,7 @@ Invoke-RestMethod http://127.0.0.1:8767/api/status
 | `XAU_CONSOLE_AUTO_INTERVAL_SECONDS` | 否 | 自主采样间隔（默认 900 秒） |
 | `XAU_CONSOLE_MT5_PYTHON` | 否 | 指定装有 MetaTrader5 包的 python.exe（默认自动探测） |
 | `XAU_CONSOLE_MT5_SNAPSHOT_SCRIPT` | 否 | 自定义 MT5 快照脚本（默认仓库 scripts/ 内自带） |
+| `XAU_CONSOLE_SYMBOL` | 否 | MT5 品种名，默认 `XAUUSD`；经纪商不同命名时覆盖（如 `XAUUSD.s` / `xauusd.s`） |
 | `XAU_CONSOLE_EA_STATUS_FILE` | 否 | Cerberus EA 风险态文件路径（默认关闭；配置即开启） |
 | `XAU_CONSOLE_EA_STATUS_MAX_AGE` | 否 | EA 状态陈旧阈值秒数（默认 120） |
 

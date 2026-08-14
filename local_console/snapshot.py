@@ -64,7 +64,7 @@ def capture_combined(
         str(config.mt5_python),
         str(config.combined_script_path),
         "--symbol",
-        "XAUUSD",
+        config.symbol,
         "--output",
         str(output),
         "--context-script",
@@ -89,7 +89,7 @@ def capture_snapshot(config: ConsoleConfig, job_id: str) -> dict[str, object]:
         str(config.mt5_python),
         str(config.mt5_snapshot_script),
         "--symbol",
-        "XAUUSD",
+        config.symbol,
         "--output",
         str(output),
     ]

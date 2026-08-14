@@ -24,7 +24,7 @@ def fetch_review_bars(
         str(config.mt5_python),
         str(config.review_script_path),
         "--symbol",
-        "XAUUSD",
+        config.symbol,
         "--from-utc",
         start.isoformat(),
         "--to-utc",
