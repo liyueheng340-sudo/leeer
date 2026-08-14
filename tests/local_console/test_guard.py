@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import unittest
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 from local_console.guard import SPREAD_DOWNGRADE_THRESHOLD, evaluate_gate
 
@@ -31,7 +31,7 @@ def healthy_tick() -> dict[str, object]:
     }
 
 
-NOW = datetime(2026, 7, 30, 0, 1, 45, tzinfo=UTC)
+NOW = datetime(2026, 7, 30, 0, 1, 45, tzinfo=timezone.utc)
 
 
 class GateTests(unittest.TestCase):
@@ -44,7 +44,7 @@ class GateTests(unittest.TestCase):
         result = evaluate_gate(
             snapshot,
             {"status": "verified_clear"},
-            datetime(2026, 7, 30, 0, 2, tzinfo=UTC),
+            datetime(2026, 7, 30, 0, 2, tzinfo=timezone.utc),
         )
 
         self.assertEqual("BLOCKED", result.action)

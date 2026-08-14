@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import threading
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 from .brief import PROMPT_VERSION, validate_report
 from .config import ConsoleConfig
@@ -48,7 +48,7 @@ def _persist_rejected_payload(
         directory = config.state_dir / "rejected"
         directory.mkdir(parents=True, exist_ok=True)
         row = {
-            "ts": datetime.now(UTC).isoformat(),
+            "ts": datetime.now(timezone.utc).isoformat(),
             "job_id": job_id,
             "attempt": attempt,
             "reason": reason,

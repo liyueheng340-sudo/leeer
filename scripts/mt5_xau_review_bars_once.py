@@ -15,7 +15,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 TIMEFRAME_MAP = {
@@ -29,7 +29,7 @@ MAX_BARS = 20_000
 
 def _parse_utc(value: str) -> datetime:
     try:
-        return datetime.fromisoformat(value).astimezone(UTC)
+        return datetime.fromisoformat(value).astimezone(timezone.utc)
     except ValueError as error:
         raise SystemExit(f"无效 UTC 时间：{value}") from error
 

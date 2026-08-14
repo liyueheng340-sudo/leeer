@@ -6,7 +6,7 @@ import json
 import time
 from contextlib import suppress
 from dataclasses import asdict, dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from threading import RLock
 from typing import Literal
@@ -45,7 +45,7 @@ VALID_STAGES = {
 
 
 def utc_now() -> str:
-    return datetime.now(UTC).isoformat()
+    return datetime.now(timezone.utc).isoformat()
 
 
 @dataclass
@@ -67,7 +67,7 @@ class JobRecord:
     @property
     def elapsed_seconds(self) -> float:
         started = datetime.fromisoformat(self.created_at)
-        return max(0.0, (datetime.now(UTC) - started).total_seconds())
+        return max(0.0, (datetime.now(timezone.utc) - started).total_seconds())
 
     def to_dict(self) -> dict[str, object]:
         result = asdict(self)
@@ -136,7 +136,7 @@ class JobStore:
 
     def fail_stale_jobs(self, max_age_seconds: float, now: datetime | None = None) -> int:
         with self._transition_lock:
-            reference = now or datetime.now(UTC)
+            reference = now or datetime.now(timezone.utc)
             failed = 0
             for path in self.root.glob("*.json"):
                 try:
@@ -171,7 +171,7 @@ class JobStore:
         进行中的任务永不清理。损坏文件在超出最小保留数后一并清除。
         """
         with self._transition_lock:
-            reference = now or datetime.now(UTC)
+            reference = now or datetime.now(timezone.utc)
             paths = sorted(
                 (path for path in self.root.glob("*.json") if path.is_file()),
                 key=lambda path: path.stat().st_mtime,

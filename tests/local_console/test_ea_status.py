@@ -4,7 +4,7 @@ import json
 import tempfile
 import time
 import unittest
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from local_console.config import ConsoleConfig
@@ -12,7 +12,7 @@ from local_console.ea_status import read_ea_status
 from local_console.guard import ea_downgrade_reason, evaluate_gate
 from local_console.service import ConsoleService
 
-NOW = datetime(2026, 7, 31, 12, 0, 0, tzinfo=UTC)
+NOW = datetime(2026, 7, 31, 12, 0, 0, tzinfo=timezone.utc)
 
 
 def has_warning(warnings: tuple[str, ...] | list[str], text: str) -> bool:
@@ -248,7 +248,7 @@ def make_config(root: Path) -> ConsoleConfig:
 
 def fake_snapshot(_config: ConsoleConfig, _job_id: str) -> dict[str, object]:
     return {
-        "timestamp": datetime.now(UTC).isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
         "identity_match": True,
         "symbol": "XAUUSD",
         "bid": 4000.0,

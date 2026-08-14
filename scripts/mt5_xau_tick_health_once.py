@@ -14,7 +14,7 @@ import json
 import statistics
 import sys
 import time
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 WINDOW_SECONDS = 60
@@ -65,7 +65,7 @@ def main(argv: list[str]) -> int:
     finally:
         mt5.shutdown()
 
-    captured_utc = datetime.now(UTC).isoformat()
+    captured_utc = datetime.now(timezone.utc).isoformat()
     if ticks is None or len(ticks) == 0:
         return emit(
             {

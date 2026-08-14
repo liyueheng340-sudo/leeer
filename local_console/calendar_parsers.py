@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 import xml.etree.ElementTree as ET
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -113,8 +113,8 @@ def _finviz_instant(value: object) -> datetime | None:
     except ValueError:
         return None
     if local.tzinfo is not None:
-        return local.astimezone(UTC)  # 若源将来带偏移，直接转
-    return local.replace(tzinfo=US_EASTERN).astimezone(UTC)
+        return local.astimezone(timezone.utc)  # 若源将来带偏移，直接转
+    return local.replace(tzinfo=US_EASTERN).astimezone(timezone.utc)
 
 
 def events_from_ff_xml(text: str) -> list[dict[str, Any]]:
@@ -147,7 +147,7 @@ def events_from_ff_xml(text: str) -> list[dict[str, Any]]:
         events.append(
             {
                 "title": f"美国·{title}",
-                "utc": local.astimezone(UTC).isoformat(),
+                "utc": local.astimezone(timezone.utc).isoformat(),
                 "impact": impact,
             }
         )
@@ -172,13 +172,13 @@ def _parse_ics_datetime(value: str, tzid: str | None) -> datetime | None:
         except ValueError:
             continue
         if fmt.endswith("Z"):
-            return moment.replace(tzinfo=UTC)
+            return moment.replace(tzinfo=timezone.utc)
         if tzid:
             try:
-                return moment.replace(tzinfo=ZoneInfo(tzid)).astimezone(UTC)
+                return moment.replace(tzinfo=ZoneInfo(tzid)).astimezone(timezone.utc)
             except (KeyError, ValueError):
                 return None
-        return moment.replace(tzinfo=UTC)  # 浮动时间按 UTC 处理（文档化限制）
+        return moment.replace(tzinfo=timezone.utc)  # 浮动时间按 UTC 处理（文档化限制）
     return None
 
 
@@ -241,6 +241,6 @@ def _parse_instant(value: object) -> datetime | None:
     if not isinstance(value, str):
         return None
     try:
-        return datetime.fromisoformat(value).astimezone(UTC)
+        return datetime.fromisoformat(value).astimezone(timezone.utc)
     except ValueError:
         return None

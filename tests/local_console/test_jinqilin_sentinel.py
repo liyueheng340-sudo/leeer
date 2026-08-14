@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import unittest
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from local_console.jinqilin_sentinel import compute_jinqilin_sentinel
 
@@ -44,7 +44,7 @@ class JinqilinSentinelTests(unittest.TestCase):
         }
         event_context = {
             "status": "verified_clear",
-            "next_event": {"title": "FOMC", "utc": (datetime.now(UTC) + timedelta(hours=6)).isoformat()},
+            "next_event": {"title": "FOMC", "utc": (datetime.now(timezone.utc) + timedelta(hours=6)).isoformat()},
         }
         tick_health = {"spread_percentile": 0.9}
         sentinel = compute_jinqilin_sentinel(
@@ -78,7 +78,7 @@ class JinqilinSentinelTests(unittest.TestCase):
         """仅新闻窗口 → LOW（1 分，单一信号不足以升级）。"""
         event_context = {
             "status": "verified_clear",
-            "next_event": {"title": "NFP", "utc": (datetime.now(UTC) + timedelta(hours=12)).isoformat()},
+            "next_event": {"title": "NFP", "utc": (datetime.now(timezone.utc) + timedelta(hours=12)).isoformat()},
         }
         sentinel = compute_jinqilin_sentinel(
             {"timeframe_structure": {"h1": {"range_location_8": 0.5}}},

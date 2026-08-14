@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -47,11 +47,11 @@ def read_ea_status(
     if not isinstance(gmt_raw, str):
         return {"available": False, "reason": "EA 状态缺少 gmt 时间戳"}
     try:
-        captured = datetime.strptime(gmt_raw, GMT_FORMAT).replace(tzinfo=UTC)
+        captured = datetime.strptime(gmt_raw, GMT_FORMAT).replace(tzinfo=timezone.utc)
     except ValueError:
         return {"available": False, "reason": "EA 状态时间戳格式异常"}
 
-    age = max(0.0, (now.astimezone(UTC) - captured).total_seconds())
+    age = max(0.0, (now.astimezone(timezone.utc) - captured).total_seconds())
     if age > max_age_seconds:
         return {
             "available": False,
@@ -75,6 +75,6 @@ def load_ea_status(config: ConsoleConfig) -> dict[str, object]:
     """按控制台配置读取 EA 运行态（服务层默认 runner）。"""
     return read_ea_status(
         config.ea_status_path,
-        datetime.now(UTC),
+        datetime.now(timezone.utc),
         config.ea_status_max_age_seconds,
     )

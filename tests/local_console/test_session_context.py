@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import unittest
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 from local_console.session_context import (
     SESSION_CONTEXT_KEY,
@@ -13,10 +13,10 @@ from local_console.session_context import (
 
 # 2026-07-15 是夏令时（BST=UTC+1, EDT=UTC-4）。
 # 伦敦 10:00 BST = 09:00 UTC。
-SUMMER_NOW = datetime(2026, 7, 15, 9, 0, tzinfo=UTC)
+SUMMER_NOW = datetime(2026, 7, 15, 9, 0, tzinfo=timezone.utc)
 # 2026-01-15 是冬令时（GMT=UTC+0, EST=UTC-5）。
 # 伦敦 10:00 GMT = 10:00 UTC。
-WINTER_NOW = datetime(2026, 1, 15, 10, 0, tzinfo=UTC)
+WINTER_NOW = datetime(2026, 1, 15, 10, 0, tzinfo=timezone.utc)
 
 
 class SessionAtTest(unittest.TestCase):
@@ -28,25 +28,25 @@ class SessionAtTest(unittest.TestCase):
 
     def test_overlap_window(self):
         # 13:00 UTC = 14:00 BST → 重叠时段（13:30-16:30 London）
-        now = datetime(2026, 7, 15, 13, 0, tzinfo=UTC)
+        now = datetime(2026, 7, 15, 13, 0, tzinfo=timezone.utc)
         label, _ = _session_at(now)
         self.assertEqual(label, "london_ny_overlap")
 
     def test_ny_late_window(self):
         # 17:00 UTC = 18:00 BST → 纽约尾盘（16:30-21:00 London）
-        now = datetime(2026, 7, 15, 17, 0, tzinfo=UTC)
+        now = datetime(2026, 7, 15, 17, 0, tzinfo=timezone.utc)
         label, _ = _session_at(now)
         self.assertEqual(label, "ny_late")
 
     def test_asia_is_inactive(self):
         # 03:00 UTC = 04:00 BST → 隔夜/亚洲时段
-        now = datetime(2026, 7, 15, 3, 0, tzinfo=UTC)
+        now = datetime(2026, 7, 15, 3, 0, tzinfo=timezone.utc)
         label, _ = _session_at(now)
         self.assertEqual(label, "asia")
 
     def test_late_night_returns_asia(self):
         # 22:00 UTC = 23:00 BST → 落入 asia（21:00 之后）
-        now = datetime(2026, 7, 15, 22, 0, tzinfo=UTC)
+        now = datetime(2026, 7, 15, 22, 0, tzinfo=timezone.utc)
         label, _ = _session_at(now)
         self.assertEqual(label, "asia")
 
@@ -95,7 +95,7 @@ class ComputeSessionContextTest(unittest.TestCase):
 
     def test_london_fix_is_nearest_occurrence(self):
         # 伦敦 11:00 BST：最近定盘是 15:00（240 分钟后），而非次日 10:30。
-        now = datetime(2026, 7, 15, 11, 0, tzinfo=UTC)  # 12:00 BST
+        now = datetime(2026, 7, 15, 11, 0, tzinfo=timezone.utc)  # 12:00 BST
         result = compute_session_context(now)
         self.assertEqual(result["minutes_to_london_fix"], 180)  # 15:00 - 12:00
 

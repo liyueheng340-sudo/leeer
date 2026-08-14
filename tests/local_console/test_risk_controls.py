@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 import unittest
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 from local_console.guard import GateResult
 from local_console.risk_controls import (
@@ -23,7 +23,7 @@ from local_console.risk_controls import (
     daily_loss_tripped,
 )
 
-NOW = datetime(2026, 8, 7, 12, 0, tzinfo=UTC)
+NOW = datetime(2026, 8, 7, 12, 0, tzinfo=timezone.utc)
 
 
 def make_record(

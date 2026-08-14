@@ -7,7 +7,7 @@ import threading
 import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from threading import Event, Lock, Thread
 
@@ -257,7 +257,7 @@ class ConsoleService:
             else:
                 return "offline"  # 数据源离线时不刷失败任务
         self._last_auto_trigger = now
-        self._last_auto_trigger_at = datetime.now(UTC).isoformat()
+        self._last_auto_trigger_at = datetime.now(timezone.utc).isoformat()
         log_event(
             self.config.runlog_path,
             kind="auto_trigger",

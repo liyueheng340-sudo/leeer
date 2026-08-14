@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import requests
@@ -64,10 +64,10 @@ def _read_cache(path, now: datetime) -> dict[str, Any] | None:
     if not isinstance(fetched, str):
         return None
     try:
-        fetched_at = datetime.fromisoformat(fetched).astimezone(UTC)
+        fetched_at = datetime.fromisoformat(fetched).astimezone(timezone.utc)
     except ValueError:
         return None
-    if now.astimezone(UTC) - fetched_at > timedelta(hours=CACHE_TTL_HOURS):
+    if now.astimezone(timezone.utc) - fetched_at > timedelta(hours=CACHE_TTL_HOURS):
         return None
     return payload
 
@@ -189,7 +189,7 @@ def fetch_macro_background(
     config: ConsoleConfig, now: datetime | None = None
 ) -> dict[str, Any]:
     """Return the daily macro background layer; never raises."""
-    reference_now = (now or datetime.now(UTC)).astimezone(UTC)
+    reference_now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     cached = _read_cache(config.macro_cache_path, reference_now)
     if cached is not None:
         return cached

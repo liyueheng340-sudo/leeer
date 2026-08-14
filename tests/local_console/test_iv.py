@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -16,7 +16,7 @@ from local_console.iv import (
     fetch_iv_context,
 )
 
-NOW = datetime(2026, 8, 2, 12, 0, tzinfo=UTC)
+NOW = datetime(2026, 8, 2, 12, 0, tzinfo=timezone.utc)
 
 
 def make_config(root: Path) -> ConsoleConfig:

@@ -24,7 +24,7 @@ import json
 import statistics
 import sys
 import time
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from types import ModuleType
 
@@ -46,7 +46,7 @@ def load_context_module(path: Path) -> ModuleType:
 def collect_tick_health(mt5, symbol: str, window_seconds: int) -> dict[str, object]:
     now_epoch = time.time()
     ticks = mt5.copy_ticks_from(symbol, now_epoch - window_seconds, MAX_TICKS, mt5.COPY_TICKS_ALL)
-    captured_utc = datetime.now(UTC).isoformat()
+    captured_utc = datetime.now(timezone.utc).isoformat()
     base: dict[str, object] = {
         "available": True,
         "symbol": symbol,

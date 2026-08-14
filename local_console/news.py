@@ -16,7 +16,7 @@ import json
 import os
 import re
 import threading
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from .config import ConsoleConfig
@@ -85,10 +85,10 @@ def _read_cache(path, now: datetime) -> dict[str, Any] | None:
     if not isinstance(fetched, str):
         return None
     try:
-        fetched_at = datetime.fromisoformat(fetched).astimezone(UTC)
+        fetched_at = datetime.fromisoformat(fetched).astimezone(timezone.utc)
     except ValueError:
         return None
-    if now.astimezone(UTC) - fetched_at > timedelta(minutes=NEWS_CACHE_TTL_MINUTES):
+    if now.astimezone(timezone.utc) - fetched_at > timedelta(minutes=NEWS_CACHE_TTL_MINUTES):
         return None
     return payload
 
@@ -127,7 +127,7 @@ def _extract_article(article: dict[str, Any]) -> dict[str, Any] | None:
         pub_date = None
         if isinstance(ts, (int, float)):
             try:
-                pub_date = datetime.fromtimestamp(ts, tz=UTC)
+                pub_date = datetime.fromtimestamp(ts, tz=timezone.utc)
             except (ValueError, OSError, OverflowError):
                 pub_date = None
     if not title:
@@ -162,7 +162,7 @@ def _collect_articles(queries: tuple[str, ...], now: datetime) -> list[dict[str,
                 continue
             pub_date = article["pub_date"]
             # 无时间或超出新鲜度窗口的一律不纳入（无法证明不是旧闻/未来新闻）。
-            if pub_date is None or pub_date.astimezone(UTC) < window_start:
+            if pub_date is None or pub_date.astimezone(timezone.utc) < window_start:
                 continue
             if article["title"] in seen:
                 continue
@@ -170,7 +170,7 @@ def _collect_articles(queries: tuple[str, ...], now: datetime) -> list[dict[str,
             collected.append(article)
         if len(collected) >= NEWS_LIMIT:
             break
-    collected.sort(key=lambda item: item["pub_date"].astimezone(UTC), reverse=True)
+    collected.sort(key=lambda item: item["pub_date"].astimezone(timezone.utc), reverse=True)
     return collected[:NEWS_LIMIT]
 
 
@@ -200,7 +200,7 @@ def _collect_articles_with_timeout(
 
 def fetch_news_context(config: ConsoleConfig, now: datetime | None = None) -> dict[str, Any]:
     """返回近期 XAU/宏观新闻背景层；never raises。"""
-    reference_now = (now or datetime.now(UTC)).astimezone(UTC)
+    reference_now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     cached = _read_cache(config.news_cache_path, reference_now)
     if cached is not None:
         return cached
@@ -215,7 +215,7 @@ def fetch_news_context(config: ConsoleConfig, now: datetime | None = None) -> di
             "title": article["title"],
             "topic": _topic_tag(article),
             "publisher": article["publisher"],
-            "utc": article["pub_date"].astimezone(UTC).isoformat(),
+            "utc": article["pub_date"].astimezone(timezone.utc).isoformat(),
             "summary": article["summary"],
             "link": article["link"],
         }

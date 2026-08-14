@@ -4,7 +4,7 @@ import json
 import sys
 import tempfile
 import unittest
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import ModuleType
 from unittest.mock import patch
@@ -17,7 +17,7 @@ from local_console.news import (
     fetch_news_context,
 )
 
-NOW = datetime(2026, 7, 31, 12, 0, 0, tzinfo=UTC)
+NOW = datetime(2026, 7, 31, 12, 0, 0, tzinfo=timezone.utc)
 RECENT_TS = int((NOW - timedelta(hours=2)).timestamp())
 OLD_TS = int((NOW - timedelta(hours=30)).timestamp())
 

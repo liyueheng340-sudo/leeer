@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from local_console.config import ConsoleConfig
@@ -18,7 +18,7 @@ from local_console.review import (
     run_due_reviews,
 )
 
-CREATED = datetime(2026, 7, 30, 12, 0, tzinfo=UTC)
+CREATED = datetime(2026, 7, 30, 12, 0, tzinfo=timezone.utc)
 NOW = CREATED + timedelta(hours=26)  # 超过 24h 复盘窗口
 
 
@@ -402,7 +402,7 @@ class ForwardValidationTests(unittest.TestCase):
     def test_splits_recent_and_earlier_windows(self):
         with tempfile.TemporaryDirectory() as directory:
             store = JobStore(Path(directory))
-            base = datetime(2026, 7, 1, 12, 0, tzinfo=UTC)
+            base = datetime(2026, 7, 1, 12, 0, tzinfo=timezone.utc)
             # 更早 10 单：全亏
             for i in range(10):
                 self._job_with(store, base + timedelta(hours=i), "SL_FIRST", -1.0)
@@ -426,7 +426,7 @@ class ForwardValidationTests(unittest.TestCase):
     def test_edge_decay_detects_win_rate_fade(self):
         with tempfile.TemporaryDirectory() as directory:
             store = JobStore(Path(directory))
-            base = datetime(2026, 7, 1, 12, 0, tzinfo=UTC)
+            base = datetime(2026, 7, 1, 12, 0, tzinfo=timezone.utc)
             # 最早 10 单全赢 → 中间 10 单 5/5 → 最近 10 单全亏：胜率随时间衰减
             for i in range(10):
                 self._job_with(store, base + timedelta(hours=i), "TP_FIRST", 1.0)

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import os
 import time
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .calendar import evaluate_calendar
@@ -41,7 +41,7 @@ def run_startup_housekeeping(service: object) -> None:
             "mt5": "ok" if tick.get("available") is True else "offline",
             "fred": "configured" if os.environ.get("FRED_API_KEY") else "missing_key",
             "calendar": calendar_status,
-            "checked_at": datetime.now(UTC).isoformat(),
+            "checked_at": datetime.now(timezone.utc).isoformat(),
         }
         log_event(service.config.runlog_path, kind="self_check", **service.self_check_result)
     except Exception:

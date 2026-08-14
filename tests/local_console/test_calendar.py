@@ -4,7 +4,7 @@ import json
 import os
 import tempfile
 import unittest
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -20,7 +20,7 @@ from local_console.calendar import (
 )
 from local_console.config import ConsoleConfig
 
-NOW = datetime(2026, 7, 31, 12, 0, tzinfo=UTC)
+NOW = datetime(2026, 7, 31, 12, 0, tzinfo=timezone.utc)
 
 
 def write_calendar(

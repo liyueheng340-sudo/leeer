@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import json
 import math
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -383,10 +383,10 @@ def _read_snapshot_cache(path: Path, now: datetime) -> dict[str, Any] | None:
     if not isinstance(fetched, str):
         return None
     try:
-        fetched_at = datetime.fromisoformat(fetched).astimezone(UTC)
+        fetched_at = datetime.fromisoformat(fetched).astimezone(timezone.utc)
     except ValueError:
         return None
-    if now.astimezone(UTC) - fetched_at > timedelta(hours=IV_CACHE_TTL_HOURS):
+    if now.astimezone(timezone.utc) - fetched_at > timedelta(hours=IV_CACHE_TTL_HOURS):
         return None
     cleaned = _sanitize_nan(payload)
     if cleaned.get("status") != "ok" or any(
@@ -418,7 +418,7 @@ def fetch_iv_context(config: ConsoleConfig, now: datetime | None = None) -> dict
         term_slope      期限结构斜率（长端 IV − 短端 IV）
         expiry          主到期日 / days_to_expiry / spot
     """
-    reference_now = (now or datetime.now(UTC)).astimezone(UTC)
+    reference_now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     cached = _read_snapshot_cache(config.iv_cache_path, reference_now)
     if cached is not None:
         return cached

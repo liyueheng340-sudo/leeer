@@ -7,7 +7,7 @@ signal_votes（king-v2 多策略投票）、regime CCI/EMA 扩展、guard 新标
 from __future__ import annotations
 
 import unittest
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 from local_console.fractal_levels import compute_fractal_levels
 from local_console.guard import cci_extreme_reason, ema_extension_reason, evaluate_gate
@@ -160,11 +160,11 @@ class GuardNewWarningsTests(unittest.TestCase):
                 "symbol": "XAUUSD",
                 "bid": 4020.0,
                 "ask": 4020.1,
-                "timestamp": datetime.now(UTC).isoformat(),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
                 "timeframe_structure": regime["available"],
             },
             {"status": "verified_clear"},
-            datetime.now(UTC),
+            datetime.now(timezone.utc),
             mode="scalp",
             resonance={"available": True, "score": 0.7, "label": "共振偏多"},
             regime=regime,

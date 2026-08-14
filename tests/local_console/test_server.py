@@ -5,7 +5,7 @@ import json
 import tempfile
 import threading
 import unittest
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from local_console.config import ConsoleConfig
@@ -15,7 +15,7 @@ from local_console.service import ConsoleService
 
 def fake_snapshot(_config: ConsoleConfig, _job_id: str) -> dict[str, object]:
     return {
-        "timestamp": datetime.now(UTC).isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
         "identity_match": True,
         "symbol": "XAUUSD",
         "bid": 4000.0,

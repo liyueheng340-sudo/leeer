@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -10,7 +10,7 @@ from local_console.config import ConsoleConfig
 from local_console.debate import _invoke_model, run_debate
 from local_console.guard import GateResult
 
-NOW = datetime(2026, 8, 2, 12, 0, tzinfo=UTC)
+NOW = datetime(2026, 8, 2, 12, 0, tzinfo=timezone.utc)
 
 
 def make_config(root: Path) -> ConsoleConfig:

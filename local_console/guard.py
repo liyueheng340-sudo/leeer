@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict, dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
@@ -331,10 +331,10 @@ def snapshot_age_seconds(snapshot: dict[str, object], now: datetime) -> float:
     if not isinstance(timestamp, str):
         return float("inf")
     try:
-        captured = datetime.fromisoformat(timestamp).astimezone(UTC)
+        captured = datetime.fromisoformat(timestamp).astimezone(timezone.utc)
     except ValueError:
         return float("inf")
-    return max(0.0, (now.astimezone(UTC) - captured).total_seconds())
+    return max(0.0, (now.astimezone(timezone.utc) - captured).total_seconds())
 
 
 def load_event_context(path: Path) -> dict[str, object]:

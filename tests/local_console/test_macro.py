@@ -3,14 +3,14 @@ from __future__ import annotations
 import os
 import tempfile
 import unittest
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from local_console.config import ConsoleConfig
 from local_console.macro import MACRO_SERIES, fetch_macro_background
 
-NOW = datetime(2026, 7, 31, 0, 0, tzinfo=UTC)
+NOW = datetime(2026, 7, 31, 0, 0, tzinfo=timezone.utc)
 
 
 def make_config(root: Path) -> ConsoleConfig:

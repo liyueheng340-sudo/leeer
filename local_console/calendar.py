@@ -31,7 +31,7 @@ calendar.json 格式（由 refresh_calendar_from_url 生成，source/schema_vers
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -106,7 +106,7 @@ def _load_calendar_file(path: Path) -> dict[str, Any] | None:
 
 def evaluate_calendar(path: Path, now: datetime | None = None) -> dict[str, Any]:
     """Evaluate the curated calendar into the gate's event-context shape."""
-    reference_now = (now or datetime.now(UTC)).astimezone(UTC)
+    reference_now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     payload = _load_calendar_file(path)
     if payload is None:
         return {"status": "unverified", "reason": "事件日历缺失或无法解析"}

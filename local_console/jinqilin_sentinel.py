@@ -106,10 +106,10 @@ def compute_jinqilin_sentinel(
         flags         命中的风险信号名（含权重说明）
         advice        给交易者的可执行建议（中文，一句）
     """
-    from datetime import UTC, datetime
+    from datetime import datetime, timezone
 
     if now_utc is None:
-        now_utc = datetime.now(UTC)
+        now_utc = datetime.now(timezone.utc)
 
     if resonance is None:
         resonance = snapshot.get("timeframe_resonance")

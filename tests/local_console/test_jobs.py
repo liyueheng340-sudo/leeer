@@ -4,7 +4,7 @@ import json
 import os
 import tempfile
 import unittest
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -74,7 +74,7 @@ class JobStoreTests(unittest.TestCase):
             store._write(record)
 
             recovered = store.fail_stale_jobs(
-                90, now=datetime(2026, 7, 30, 0, 2, tzinfo=UTC)
+                90, now=datetime(2026, 7, 30, 0, 2, tzinfo=timezone.utc)
             )
             result = store.get(job.id)
 
@@ -95,7 +95,7 @@ class JobStoreTests(unittest.TestCase):
             (Path(directory) / "broken2.json").write_text('{"foo": 1}', encoding="utf-8")
 
             recovered = store.fail_stale_jobs(
-                90, now=datetime(2026, 7, 30, 0, 2, tzinfo=UTC)
+                90, now=datetime(2026, 7, 30, 0, 2, tzinfo=timezone.utc)
             )
 
             self.assertEqual(1, recovered)
@@ -114,7 +114,7 @@ class JobStoreTests(unittest.TestCase):
             record.updated_at = "2026-01-01T00:00:00+00:00"
             store._write(record)
 
-            pruned = store.prune_expired(90, keep_minimum=0, now=datetime(2026, 7, 30, tzinfo=UTC))
+            pruned = store.prune_expired(90, keep_minimum=0, now=datetime(2026, 7, 30, tzinfo=timezone.utc))
 
             self.assertEqual([old.id], pruned)
             self.assertFalse(store._path(old.id).exists())
@@ -134,7 +134,7 @@ class JobStoreTests(unittest.TestCase):
                 os.utime(store._path(job.id), (mtime, mtime))
                 ids.append(job.id)
 
-            pruned = store.prune_expired(90, keep_minimum=2, now=datetime(2026, 7, 30, tzinfo=UTC))
+            pruned = store.prune_expired(90, keep_minimum=2, now=datetime(2026, 7, 30, tzinfo=timezone.utc))
 
             # 全部超过保留期，但保底保留最新 2 条，只删最旧的 ids[0]
             self.assertEqual([ids[0]], pruned)
@@ -150,7 +150,7 @@ class JobStoreTests(unittest.TestCase):
             record.updated_at = "2026-01-01T00:00:00+00:00"
             store._write(record)
 
-            pruned = store.prune_expired(90, keep_minimum=0, now=datetime(2026, 7, 30, tzinfo=UTC))
+            pruned = store.prune_expired(90, keep_minimum=0, now=datetime(2026, 7, 30, tzinfo=timezone.utc))
 
             self.assertEqual([], pruned)
             self.assertTrue(store._path(active.id).exists())
@@ -229,7 +229,7 @@ class JobStoreTests(unittest.TestCase):
             store.transition = denied_transition  # type: ignore[method-assign]
             try:
                 recovered = store.fail_stale_jobs(
-                    90, now=datetime(2026, 7, 30, 0, 2, tzinfo=UTC)
+                    90, now=datetime(2026, 7, 30, 0, 2, tzinfo=timezone.utc)
                 )
             finally:
                 store.transition = original_transition

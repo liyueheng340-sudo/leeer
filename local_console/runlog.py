@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -17,7 +17,7 @@ def log_event(path: Path, **fields: Any) -> None:
     """Append one JSON line; never raises — logging must not break jobs."""
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        row = {"ts": datetime.now(UTC).isoformat(), **fields}
+        row = {"ts": datetime.now(timezone.utc).isoformat(), **fields}
         with path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(row, ensure_ascii=False) + "\n")
     except OSError:

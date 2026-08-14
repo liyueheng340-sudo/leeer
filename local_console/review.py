@@ -13,7 +13,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
 from .config import ConsoleConfig
@@ -178,7 +178,7 @@ def _decided(
         "entry_touched": touched,
         "r_multiple": r_multiple,
         "direction_correct": direction_correct,
-        "decided_bar_utc": datetime.fromtimestamp(int(bar["time"]), UTC).isoformat(),
+        "decided_bar_utc": datetime.fromtimestamp(int(bar["time"]), timezone.utc).isoformat(),
         "risk_points": round(risk, 2),
         "reward_points": round(reward, 2),
     }
@@ -196,7 +196,7 @@ def due_for_review(records: list[JobRecord], now: datetime) -> list[JobRecord]:
         review = record.review
         if isinstance(review, dict) and review.get("outcome") not in (None, "PENDING"):
             continue  # 已有终态结论
-        created = datetime.fromisoformat(record.created_at).astimezone(UTC)
+        created = datetime.fromisoformat(record.created_at).astimezone(timezone.utc)
         if created > now:
             continue
         due.append(record)
@@ -210,19 +210,19 @@ def run_due_reviews(
     bars_runner=fetch_review_bars,
 ) -> int:
     """One MT5 call covers all due jobs; returns how many reviews were written."""
-    reference_now = (now or datetime.now(UTC)).astimezone(UTC)
+    reference_now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     records = store.list_recent(limit=200)
     due = due_for_review(records, reference_now)
     if not due:
         return 0
-    earliest = min(datetime.fromisoformat(record.created_at).astimezone(UTC) for record in due)
+    earliest = min(datetime.fromisoformat(record.created_at).astimezone(timezone.utc) for record in due)
     bars = bars_runner(config, earliest, reference_now)
     if not bars:
         return 0
     written = 0
     for record in due:
         plan = parse_trade_plan(record.report)
-        created = datetime.fromisoformat(record.created_at).astimezone(UTC)
+        created = datetime.fromisoformat(record.created_at).astimezone(timezone.utc)
         window_end = min(reference_now, created + timedelta(hours=REVIEW_WINDOW_HOURS))
         window_bars = [
             bar

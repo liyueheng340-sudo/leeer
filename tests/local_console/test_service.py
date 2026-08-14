@@ -3,7 +3,7 @@ from __future__ import annotations
 import tempfile
 import time
 import unittest
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from threading import Event
 from unittest.mock import patch
@@ -28,7 +28,7 @@ def make_config(root: Path) -> ConsoleConfig:
 
 def fake_snapshot(_config: ConsoleConfig, _job_id: str) -> dict[str, object]:
     return {
-        "timestamp": datetime.now(UTC).isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
         "identity_match": True,
         "symbol": "XAUUSD",
         "bid": 4000.0,
@@ -282,7 +282,7 @@ class ConsoleServiceTests(unittest.TestCase):
 
             def structured_snapshot(_config: ConsoleConfig, _job_id: str) -> dict[str, object]:
                 return {
-                    "timestamp": datetime.now(UTC).isoformat(),
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
                     "identity_match": True,
                     "symbol": "XAUUSD",
                     "bid": 4000.0,

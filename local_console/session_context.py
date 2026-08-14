@@ -15,7 +15,7 @@ IANA 时区库处理，不需要手工判断 DST。任何异常都返回 status=
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -83,7 +83,7 @@ def compute_session_context(now: datetime | None = None) -> dict[str, Any]:
         comex_open_at            该次开盘的 ISO 时刻（ET 本地）
         checked_at               UTC 检查时刻
     """
-    reference = (now or datetime.now(UTC)).astimezone(UTC)
+    reference = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     try:
         now_london = reference.astimezone(LONDON)
         now_ny = reference.astimezone(NEW_YORK)

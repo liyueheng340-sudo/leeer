@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 from .brief import PROMPT_VERSION
 from .fractal_levels import compute_fractal_levels
@@ -35,7 +35,7 @@ def build_gate_payload(
     gate = evaluate_gate(
         snapshot,
         event_context,
-        datetime.now(UTC),
+        datetime.now(timezone.utc),
         tick_health,
         ea_status,
         resonance=resonance,

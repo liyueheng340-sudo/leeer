@@ -33,7 +33,6 @@ from tradingagents.agents.schemas import SentimentReport, render_sentiment_repor
 from tradingagents.agents.utils.agent_utils import (
     get_instrument_context_from_state,
     get_language_instruction,
-    get_news,
 )
 from tradingagents.agents.utils.structured import (
     NO_EXTERNAL_TOOLS,

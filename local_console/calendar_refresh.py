@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 import time
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
@@ -70,8 +70,8 @@ def refresh_calendar_from_url(config: ConsoleConfig) -> bool:
     ):
         return False
     try:
-        mtime = datetime.fromtimestamp(config.calendar_path.stat().st_mtime, UTC)
-        if datetime.now(UTC) - mtime < timedelta(hours=FETCH_THROTTLE_HOURS):
+        mtime = datetime.fromtimestamp(config.calendar_path.stat().st_mtime, timezone.utc)
+        if datetime.now(timezone.utc) - mtime < timedelta(hours=FETCH_THROTTLE_HOURS):
             return False  # 3 小时内拉过，不重复请求
     except OSError:
         pass  # 文件不存在 → 立即拉取
@@ -93,7 +93,7 @@ def refresh_calendar_from_url(config: ConsoleConfig) -> bool:
         # 此前 `if not events` 把空日历当失败，calendar.json 永不存在，
         # 每个任务都锤源拉取，源一限流就反复失败）。
         payload: dict[str, Any] = {
-            "updated_at": datetime.now(UTC).isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
             "source": url,
             "schema_version": CALENDAR_SCHEMA_VERSION,
             "events": events,

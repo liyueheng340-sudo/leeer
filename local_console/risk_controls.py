@@ -17,7 +17,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from .guard import GateResult
@@ -168,7 +168,7 @@ def _daily_sl_loss(records: list[Any]) -> dict[str, float]:
         if not isinstance(created, str):
             continue
         try:
-            day = datetime.fromisoformat(created).astimezone(UTC).date().isoformat()
+            day = datetime.fromisoformat(created).astimezone(timezone.utc).date().isoformat()
         except ValueError:
             continue
         daily[day] = daily.get(day, 0.0) + -1.0
