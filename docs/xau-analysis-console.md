@@ -1,9 +1,9 @@
 # XAU Analysis Console
 
-启动：
+启动（仓库根目录）：
 
 ```powershell
-D:\XAU\TradingAgents\.venv\Scripts\python.exe D:\XAU\TradingAgents\scripts\run_xau_analysis_console.py
+.venv\Scripts\python.exe scripts\run_xau_analysis_console.py
 ```
 
 浏览器会打开 `http://127.0.0.1:8767`。服务只绑定本机，不向局域网开放。

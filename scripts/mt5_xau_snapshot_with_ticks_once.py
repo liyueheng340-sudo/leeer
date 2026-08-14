@@ -7,13 +7,13 @@ initialize/shutdown 一次，是最主要的重复调用。本脚本在同一 MT
     {"record": "market_context", ...}
     {"record": "tick_health", ...}
 
-行情快照本体复用外部只读脚本的 build_market_context（通过 --context-script
-指向 D:\\XAU\\scripts\\mt5_xau_market_context_once.py 动态加载），不复制其逻辑。
+行情快照本体复用仓库内只读脚本的 build_market_context（通过 --context-script
+指向 scripts/mt5_xau_market_context_once.py 动态加载），不复制其逻辑。
 
 用法（需 MT5 终端已登录运行）：
     python mt5_xau_snapshot_with_ticks_once.py \
         --symbol XAUUSD --output out.jsonl \
-        --context-script D:\\XAU\\scripts\\mt5_xau_market_context_once.py
+        --context-script scripts\\mt5_xau_market_context_once.py
 """
 
 from __future__ import annotations
