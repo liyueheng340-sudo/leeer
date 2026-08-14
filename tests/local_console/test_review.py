@@ -13,6 +13,7 @@ from local_console.review import (
     compute_review_stats,
     due_for_review,
     evaluate_plan,
+    evaluate_plan_with_costs,
     parse_trade_plan,
     run_due_reviews,
 )
@@ -190,6 +191,30 @@ class StatsAndDueTests(unittest.TestCase):
         self.assertEqual(0.0, stats["avg_r"])
         self.assertIn("不构成", stats["disclaimer"])
 
+        # 统计验证层：小样本（n=2）即使 50% 胜率，CI 也承认不可靠、不显著。
+        self.assertIsNotNone(stats["ci_low"])
+        self.assertIsNotNone(stats["ci_high"])
+        self.assertLessEqual(stats["ci_low"], 0.5)
+        self.assertGreaterEqual(stats["ci_high"], 0.5)
+        self.assertFalse(stats["significant"])
+
+    def test_stats_large_sample_can_be_significant(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = JobStore(Path(directory))
+            # 100 单 65% 胜率：Wilson 下界 > 0.5 → 显著；n>=100 → 样本充足
+            for _ in range(65):
+                self.completed_job(store, {"outcome": "TP_FIRST", "r_multiple": 1.0})
+            for _ in range(35):
+                self.completed_job(store, {"outcome": "SL_FIRST", "r_multiple": -1.0})
+
+            stats = compute_review_stats(store.list_recent(limit=200))
+
+        self.assertEqual(100, stats["decided"])
+        self.assertEqual(0.65, stats["win_rate"])
+        self.assertTrue(stats["significant"])
+        self.assertGreater(stats["ci_low"], 0.5)
+        self.assertEqual("样本充足", stats["note"])
+
     def test_due_for_review_skips_decided_and_keeps_pending(self):
         with tempfile.TemporaryDirectory() as directory:
             store = JobStore(Path(directory))
@@ -265,6 +290,13 @@ class ContextStatsTests(unittest.TestCase):
         self.assertEqual(0.5, contexts["by_gate_action"]["ANALYSE"]["win_rate"])
         self.assertEqual(1, contexts["by_gate_action"]["WATCH"]["decided"])
         self.assertEqual(1.0, contexts["by_gate_action"]["WATCH"]["win_rate"])
+        # 统计验证层：8 维度多重比较，Bonferroni 门槛 = 0.05/8
+        self.assertEqual(8, contexts["bonferroni_n"])
+        self.assertAlmostEqual(0.05 / 8, contexts["bonferroni_alpha"], places=5)
+        # 分组胜率同样带 CI（不显著的小样本被诚实暴露）
+        analyse = contexts["by_gate_action"]["ANALYSE"]
+        self.assertIsNotNone(analyse["ci_low"])
+        self.assertFalse(analyse["significant"])
 
     def test_resonance_dimension_skips_unavailable(self):
         bull = {"available": True, "score": 0.8, "label": "共振偏多"}
@@ -386,6 +418,30 @@ class ForwardValidationTests(unittest.TestCase):
         self.assertEqual(-1.0, result["earlier"]["avg_r"])
         self.assertEqual(1.0, result["recent"]["win_rate"])
         self.assertEqual(0.0, result["earlier"]["win_rate"])
+        # edge_decay：20 已判定样本按时间切 3 段；本场景新近段更强，无衰减
+        self.assertIn("edge_decay", result)
+        self.assertEqual(3, len(result["edge_decay"]["buckets"]))
+        self.assertFalse(result["edge_decay"]["decayed"])
+
+    def test_edge_decay_detects_win_rate_fade(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = JobStore(Path(directory))
+            base = datetime(2026, 7, 1, 12, 0, tzinfo=UTC)
+            # 最早 10 单全赢 → 中间 10 单 5/5 → 最近 10 单全亏：胜率随时间衰减
+            for i in range(10):
+                self._job_with(store, base + timedelta(hours=i), "TP_FIRST", 1.0)
+            for i in range(10):
+                self._job_with(store, base + timedelta(days=1, hours=i), "TP_FIRST" if i % 2 == 0 else "SL_FIRST", 1.0 if i % 2 == 0 else -1.0)
+            for i in range(10):
+                self._job_with(store, base + timedelta(days=2, hours=i), "SL_FIRST", -1.0)
+
+            result = compute_forward_validation(store.list_recent(limit=200))
+
+        self.assertTrue(result["edge_decay"]["decayed"])
+        buckets = result["edge_decay"]["buckets"]
+        self.assertEqual(3, len(buckets))
+        # 验证单调衰减：最早段胜率 > 最近段胜率
+        self.assertGreater(buckets[0]["win_rate"], buckets[-1]["win_rate"])
 
     def test_no_decided_is_empty(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -473,6 +529,47 @@ class DirectionQualityTests(unittest.TestCase):
         record.report = long_plan()
         record.review = {"outcome": outcome, "r_multiple": r, "direction_correct": dc}
         store._write(record)
+
+
+class EvaluatePlanWithCostsTests(unittest.TestCase):
+    """回测可信性增强：evaluate_plan_with_costs 的成本扣除与 intra-bar 判定。"""
+
+    def test_cost_reduces_win_r_multiple(self):
+        # LONG risk=15, TP=4015, SL=3985。bar 触及 TP(4016)。
+        # 无成本 r=1.0；spread=3 → cost_r=3/15=0.2 → r=0.8
+        bars = [bar(0, 4001, 3999, 4000), bar(5, 4016, 4002, 4015)]
+        result = evaluate_plan_with_costs(long_plan(), bars, CREATED, NOW, spread=3.0)
+        self.assertEqual("TP_FIRST", result["outcome"])
+        self.assertAlmostEqual(0.8, result["r_multiple"], places=3)
+        self.assertAlmostEqual(0.2, result["cost_r"], places=4)
+
+    def test_zero_spread_no_cost(self):
+        bars = [bar(0, 4001, 3999, 4000), bar(5, 4016, 4002, 4015)]
+        result = evaluate_plan_with_costs(long_plan(), bars, CREATED, NOW, spread=0.0)
+        self.assertEqual("TP_FIRST", result["outcome"])
+        self.assertEqual(1.0, result["r_multiple"])
+        self.assertNotIn("cost_r", result)
+
+    def test_intra_bar_simultaneous_tp_sl_uses_distance_ratio(self):
+        # 同一根 K 线 high=4016(触TP) low=3984(触SL)。close=4000。
+        # dist_tp=|4000-4015|=15, dist_sl=|4000-3985|=15, ratio=15/30=0.5 → 判 TP
+        bars = [bar(0, 4001, 3999, 4000), bar(5, 4016, 3984, 4000)]
+        result = evaluate_plan_with_costs(long_plan(), bars, CREATED, NOW)
+        self.assertEqual("TP_FIRST", result["outcome"])
+        self.assertAlmostEqual(0.5, result["intra_bar"], places=3)
+
+    def test_intra_bar_close_to_sl_judges_sl(self):
+        # close=3986 更靠近 SL(3985)：dist_sl=1 小 → ratio 小 → 判 SL
+        bars = [bar(0, 4001, 3999, 4000), bar(5, 4016, 3984, 3986)]
+        result = evaluate_plan_with_costs(long_plan(), bars, CREATED, NOW)
+        self.assertEqual("SL_FIRST", result["outcome"])
+        self.assertIn("intra_bar", result)
+
+    def test_pending_ignores_cost(self):
+        bars = [bar(0, 4001, 3999, 4000)]
+        result = evaluate_plan_with_costs(long_plan(), bars, CREATED, CREATED + timedelta(hours=1), spread=3.0)
+        self.assertEqual("PENDING", result["outcome"])
+        self.assertIsNone(result["r_multiple"])
 
 
 if __name__ == "__main__":

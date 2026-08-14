@@ -36,7 +36,7 @@ def valid_report(direction: str) -> dict[str, object]:
         "direction": direction,
         "entry_zone": "3995-4005",
         "take_profit": "4015" if direction == "LONG" else "3985",
-        "stop_loss": "3985" if direction == "LONG" else "4015",
+        "stop_loss": "3990" if direction == "LONG" else "4010",
         "risk_note": "测试风险提示。",
         "suggestions": ["建议一", "建议二"],
         "scenarios": ["若破位离场", "若冲高减仓"],

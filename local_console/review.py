@@ -55,6 +55,7 @@ __all__ = [
     "compute_review_stats",
     "due_for_review",
     "evaluate_plan",
+    "evaluate_plan_with_costs",
     "fetch_review_bars",
     "parse_trade_plan",
     "run_due_reviews",
@@ -233,3 +234,96 @@ def run_due_reviews(
         store.set_review(record.id, review)
         written += 1
     return written
+
+
+def evaluate_plan_with_costs(
+    plan: dict[str, Any],
+    bars: Iterable[dict[str, float]],
+    created_at: datetime,
+    now: datetime,
+    spread: float = 0.0,
+) -> dict[str, Any]:
+    """回测专用判定：计入点差/滑点成本 + Intra-bar Path Bias 改进（不改实盘 evaluate_plan）。
+
+    2026-08-07 回测可信性增强（采纳三方批判）：
+    1. Intra-bar 改进：同一根 K 线同时触及 TP 和 SL 时，不"一律计止损"——按
+       "开盘价到 TP 距离 : 开盘价到 SL 距离"的比例判定谁更可能先触及。M15 高波动下
+       "一律计止损"会高估止损（技术派批判的 Intra-bar Path Bias）。
+       ratio = dist_to_tp / (dist_to_tp + dist_to_sl)；随机游走下 TP 先触及概率≈ratio。
+    2. 点差/滑点成本：出入场各扣 spread/2（买卖两次），折成 R 计入 r_multiple。
+    返回结构与 evaluate_plan 一致 + 额外 cost_r / intra_bar 字段。
+    """
+    is_long = plan["direction"] == "LONG"
+    entry_lo, entry_hi = plan["entry_lo"], plan["entry_hi"]
+    tp, sl, mid = plan["take_profit"], plan["stop_loss"], plan["entry_mid"]
+    risk = abs(mid - sl)
+    reward = abs(tp - mid)
+    window_end = min(now, created_at + timedelta(hours=REVIEW_WINDOW_HOURS))
+    confirm_threshold = risk * DIRECTION_CONFIRM_FRACTION
+
+    touched = False
+    last_close: float | None = None
+    max_favorable = 0.0
+    for bar in bars:
+        high, low, close = float(bar["high"]), float(bar["low"]), float(bar["close"])
+        last_close = close
+        if not touched:
+            if low <= entry_hi and high >= entry_lo:
+                touched = True
+            else:
+                continue
+        favorable = max(high - mid, 0.0) if is_long else max(mid - low, 0.0)
+        if favorable > max_favorable:
+            max_favorable = favorable
+        hit_tp = high >= tp if is_long else low <= tp
+        hit_sl = low <= sl if is_long else high >= sl
+        if hit_tp and hit_sl:
+            # Intra-bar 同时触及：谁近先触及谁（不一律计止损）。
+            # close 离 TP 更近 → TP 先触及；离 SL 更近 → SL 先触及。
+            dist_tp = abs(close - tp)
+            dist_sl = abs(close - sl)
+            ratio = dist_sl / (dist_tp + dist_sl) if (dist_tp + dist_sl) > 0 else 0.5
+            if ratio >= 0.5:  # 离 SL 更远 = 离 TP 更近 → 判 TP
+                r = round(reward / risk, 3) if risk > 0 else None
+                out, rr = "TP_FIRST", r
+            else:  # 离 SL 更近 → 判 SL
+                out, rr = "SL_FIRST", -1.0
+            result = _decided(out, rr, touched, bar, risk, reward,
+                              direction_correct=max_favorable >= confirm_threshold)
+            result["intra_bar"] = round(ratio, 3)
+            return _apply_cost(result, spread)
+        if hit_tp:
+            r = round(reward / risk, 3) if risk > 0 else None
+            return _apply_cost(
+                _decided("TP_FIRST", r, touched, bar, risk, reward,
+                         direction_correct=max_favorable >= confirm_threshold), spread)
+        if hit_sl:
+            return _apply_cost(
+                _decided("SL_FIRST", -1.0, touched, bar, risk, reward,
+                         direction_correct=max_favorable >= confirm_threshold), spread)
+
+    if now < created_at + timedelta(hours=REVIEW_WINDOW_HOURS):
+        return {"outcome": "PENDING", "entry_touched": touched, "r_multiple": None,
+                "direction_correct": None, "window_end": window_end.isoformat()}
+    if not touched:
+        return {"outcome": "NOT_TRIGGERED", "entry_touched": False, "r_multiple": None,
+                "direction_correct": None, "window_end": window_end.isoformat()}
+    floating = None
+    if last_close is not None:
+        sign = 1 if is_long else -1
+        floating = round((last_close - mid) * sign, 2)
+    return {"outcome": "EXPIRED_UNRESOLVED", "entry_touched": True, "r_multiple": None,
+            "direction_correct": max_favorable >= confirm_threshold,
+            "floating_points": floating, "window_end": window_end.isoformat()}
+
+
+def _apply_cost(result: dict[str, Any], spread: float) -> dict[str, Any]:
+    """把点差/滑点成本折成 R 扣进 r_multiple（出入场各 spread/2，买卖两次）。"""
+    if result.get("r_multiple") is None:
+        return result
+    risk = result.get("risk_points")
+    if isinstance(risk, (int, float)) and risk > 0 and spread > 0:
+        cost_r = spread / risk
+        result["r_multiple"] = round(float(result["r_multiple"]) - cost_r, 3)
+        result["cost_r"] = round(cost_r, 4)
+    return result

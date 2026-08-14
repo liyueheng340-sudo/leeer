@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 
+from .factor_engine import compute_factors, format_factor_line
 from .guard import ACTIVE_SESSION_LABELS, GateResult
 from .jobs import JobKind, JobMode
 from .snapshot_facts import _key_levels
@@ -345,6 +346,22 @@ def build_prompt(
         if regime.get("volatility_confirmed") is True:
             regime_rule += " 波动放大（StdDev 超阈值），止盈/止损与仓位应更保守。"
         output_rules.append(regime_rule)
+    # 统计因子引擎 (2026-08-13): 基于9个月真实tick挖掘的稳定因子
+    # 为ADX/RSI等传统指标的补充, 提供动量反转/峰度聚集等统计信号
+    _bar_series = snapshot.get("bar_series")
+    if isinstance(_bar_series, dict):
+        _m15_bars = _bar_series.get("m15")
+        if isinstance(_m15_bars, list) and len(_m15_bars) >= 25:
+            _closes = [float(b["close"]) for b in _m15_bars if isinstance(b, dict) and "close" in b]
+            if len(_closes) >= 25:
+                _factor_result = compute_factors(_closes)
+                if _factor_result.get("available"):
+                    _factor_rule = (
+                        "统计因子引擎(基于9个月真实tick交叉验证的稳定因子, IC 0.02-0.05弱优势): "
+                        + format_factor_line(_factor_result)
+                        + "; 因子仅作辅助参考, 综合信号|>0.25|才提示倾向, 弱信号不得主导方向判断"
+                    )
+                    output_rules.append(_factor_rule)
     # P0 方向冲突裁决优先级（2026-08-07）：当多个确定性方向事实互相矛盾时，
     # 模型必须按固定优先级裁决，不得靠猜测或随机。粒度从高时间框架到动能警示。
     _dir_facts_present = {

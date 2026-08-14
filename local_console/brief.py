@@ -89,7 +89,7 @@ def request_brief(
                 return _invoke_with_retry(fallback_llm.invoke, prompt, max_retries)
             except Exception:
                 pass  # 备用也失败：抛原始主端点错误，便于诊断
-        raise RuntimeError(f"Qwen 分析多次重试仍失败") from primary_error
+        raise RuntimeError("Qwen 分析多次重试仍失败") from primary_error
 
 
 def _parse_model_json(content: str) -> object:

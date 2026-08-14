@@ -40,7 +40,7 @@ def analyse_payload() -> dict[str, object]:
         "evidence_fields": ["bid", "timeframe_structure.h1.atr_14"],
         "direction": "LONG",
         "entry_zone": "3995-4005",
-        "take_profit": "4015",
+        "take_profit": "4030",
         "stop_loss": "3985",
         "risk_note": "事件未核验，仓位需保守。",
         "suggestions": ["若 M15 回踩 3995-4005 不破，可分批入场", "突破 4015 后关注量能确认，放量则持有"],
@@ -518,7 +518,7 @@ class BriefValidationTests(unittest.TestCase):
     def test_short_geometry_is_enforced_symmetrically(self):
         payload = analyse_payload()
         payload["direction"] = "SHORT"
-        payload["take_profit"] = "3985"
+        payload["take_profit"] = "3970"
         payload["stop_loss"] = "4015"
 
         accepted, _, _ = validate_report(payload, ANALYSE_GATE, analyse_snapshot())
@@ -571,6 +571,92 @@ class BriefValidationTests(unittest.TestCase):
         self.assertFalse(accepted)
         self.assertIn("止损距离入场小于", reason)
         self.assertIsNone(report)
+
+    def test_stop_width_below_1_5_atr_warns_but_accepts(self):
+        # 2026-08-07 修正案：止损宽度 < 1.5×ATR 时软警示（8/7 复盘 17 单 LONG 因
+        # tp/sl 仅 12-15 点 ≈1.3-1.6×ATR 被正常回撤扫损，合计 -10.1R）。
+        # 软警示不拒报告（如实标注，让交易者权衡）——与 MIN_STOP_ATR=0.5 硬下限互补。
+        payload = analyse_payload()
+        payload["take_profit"] = "4030"  # 距入场 30 点，RR=30/12=2.5 达标
+        payload["stop_loss"] = "3988"  # 距入场 4000 仅 12 = 0.6×ATR(20)：<0.5 硬下限之上，<1.5 警示线之下
+
+        accepted, reason, report = validate_report(payload, ANALYSE_GATE, analyse_snapshot())
+
+        self.assertTrue(accepted)
+        self.assertEqual("报告已验收", reason)
+        self.assertTrue(has_validation_warning(report, "止损宽度"))
+
+    def test_stop_width_at_or_above_1_5_atr_no_warning(self):
+        # 止损 40 点 = 2×ATR(20) ≥ 1.5×ATR → 无宽度警示（且 RR=60/40=1.5 达标）
+        payload = analyse_payload()
+        payload["take_profit"] = "4060"
+        payload["stop_loss"] = "3960"
+
+        accepted, _, report = validate_report(payload, ANALYSE_GATE, analyse_snapshot())
+
+        self.assertTrue(accepted)
+        self.assertNotIn("validation_warnings", report)
+
+    def test_neutral_direction_skips_stop_width_warning(self):
+        payload = analyse_payload()
+        payload["direction"] = "NEUTRAL"
+        payload["entry_zone"] = "不适用"
+        payload["take_profit"] = "不适用"
+        payload["stop_loss"] = "不适用"
+
+        accepted, reason, report = validate_report(payload, ANALYSE_GATE, analyse_snapshot())
+
+        self.assertTrue(accepted)
+        self.assertFalse(has_validation_warning(report, "止损宽度"))
+
+    def test_reward_risk_below_1_5_is_rejected(self):
+        # 2026-08-14 修正案二：止盈距离 < 1.5×止损距离拒收（8/7 复盘 17 单 LONG
+        # 方向全对但 tp/sl 同为 12-15 点、1:1 盈亏比被扫损 -10.1R——1:1 结构在
+        # 50% 胜率下期望≈0）。纯几何校验，与 MIN_STOP_ATR 同为执行缺陷硬拦截。
+        payload = analyse_payload()
+        payload["take_profit"] = "4015"  # 距入场 15 点
+        payload["stop_loss"] = "3985"  # 距入场 15 点：RR=1.0 < 1.5
+
+        accepted, reason, report = validate_report(payload, ANALYSE_GATE, analyse_snapshot())
+
+        self.assertFalse(accepted)
+        self.assertIn("盈亏比不足", reason)
+        self.assertIsNone(report)
+
+    def test_reward_risk_at_1_5_is_accepted(self):
+        # RR=1.5 恰好达标（60/40=1.5）→ 验收通过
+        payload = analyse_payload()
+        payload["take_profit"] = "4060"  # 距入场 60 点
+        payload["stop_loss"] = "3960"  # 距入场 40 点
+
+        accepted, reason, report = validate_report(payload, ANALYSE_GATE, analyse_snapshot())
+
+        self.assertTrue(accepted)
+        self.assertEqual("报告已验收", reason)
+
+    def test_reward_risk_skipped_for_neutral(self):
+        # NEUTRAL 无交易建议字段，RR 校验应跳过
+        payload = analyse_payload()
+        payload["direction"] = "NEUTRAL"
+        payload["entry_zone"] = "不适用"
+        payload["take_profit"] = "不适用"
+        payload["stop_loss"] = "不适用"
+
+        accepted, reason, _ = validate_report(payload, ANALYSE_GATE, analyse_snapshot())
+
+        self.assertTrue(accepted)
+        self.assertEqual("报告已验收", reason)
+
+    def test_reward_risk_long_symmetric(self):
+        # LONG 止盈在上方 20 点、止损在下方 15 点 → RR=1.33 < 1.5 拒收
+        payload = analyse_payload()
+        payload["take_profit"] = "4020"
+        payload["stop_loss"] = "3985"
+
+        accepted, reason, _ = validate_report(payload, ANALYSE_GATE, analyse_snapshot())
+
+        self.assertFalse(accepted)
+        self.assertIn("盈亏比不足", reason)
 
     def test_neutral_direction_skips_price_geometry(self):
         payload = analyse_payload()
@@ -814,7 +900,7 @@ class EdgeDisciplineValidationTests(unittest.TestCase):
     def test_short_accepted_with_warning_when_resonance_bullish(self):
         payload = analyse_payload()
         payload["direction"] = "SHORT"
-        payload["take_profit"] = "3985"
+        payload["take_profit"] = "3970"
         payload["stop_loss"] = "4015"
         accepted, reason, report = validate_report(
             payload, ANALYSE_GATE, self.snapshot_with_resonance(0.8)
@@ -826,6 +912,8 @@ class EdgeDisciplineValidationTests(unittest.TestCase):
 
     def test_long_accepted_without_warning_when_resonance_bullish(self):
         payload = analyse_payload()  # LONG
+        payload["take_profit"] = "4060"  # 距入场 60 点，RR=60/40=1.5 达标
+        payload["stop_loss"] = "3960"  # 距入场 40 点 = 2×ATR(20)，避免止损宽度警示
         accepted, reason, report = validate_report(
             payload, ANALYSE_GATE, self.snapshot_with_resonance(0.8)
         )
@@ -837,7 +925,7 @@ class EdgeDisciplineValidationTests(unittest.TestCase):
     def test_short_accepted_when_resonance_bearish(self):
         payload = analyse_payload()
         payload["direction"] = "SHORT"
-        payload["take_profit"] = "3985"
+        payload["take_profit"] = "3970"
         payload["stop_loss"] = "4015"
         accepted, reason, _ = validate_report(
             payload, ANALYSE_GATE, self.snapshot_with_resonance(-0.8)
@@ -876,7 +964,7 @@ class EdgeDisciplineValidationTests(unittest.TestCase):
         }
         payload = analyse_payload()
         payload["direction"] = "SHORT"
-        payload["take_profit"] = "3985"
+        payload["take_profit"] = "3970"
         payload["stop_loss"] = "4015"
 
         accepted, reason, report = validate_report(payload, ANALYSE_GATE, snapshot)
@@ -1037,7 +1125,7 @@ class MarketRegimeValidationTests(unittest.TestCase):
     def test_short_accepted_with_warning_when_trending_buy(self):
         payload = analyse_payload()
         payload["direction"] = "SHORT"
-        payload["take_profit"] = "3985"
+        payload["take_profit"] = "3970"
         payload["stop_loss"] = "4015"
         accepted, reason, report = validate_report(
             payload,
@@ -1063,6 +1151,8 @@ class MarketRegimeValidationTests(unittest.TestCase):
 
     def test_long_accepted_when_trending_buy(self):
         payload = analyse_payload()  # LONG
+        payload["take_profit"] = "4060"  # 距入场 60 点，RR=60/40=1.5 达标
+        payload["stop_loss"] = "3960"  # 距入场 40 点 = 2×ATR(20)，避免止损宽度警示
         accepted, reason, report = validate_report(
             payload,
             ANALYSE_GATE,
@@ -1090,7 +1180,7 @@ class MarketRegimeValidationTests(unittest.TestCase):
     def test_short_accepted_with_warning_when_rsi_oversold(self):
         payload = analyse_payload()
         payload["direction"] = "SHORT"
-        payload["take_profit"] = "3985"
+        payload["take_profit"] = "3970"
         payload["stop_loss"] = "4015"
         accepted, reason, report = validate_report(
             payload,

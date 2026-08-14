@@ -18,10 +18,13 @@ from .housekeeping import run_reviews_safe
 from .jobs import TERMINAL_STAGES
 from .market_capture import capture_market_data, safe_ea_status, safe_macro, safe_news
 from .risk_controls import (
+    DAILY_LOSS_CIRCUIT_R,
     LOSS_STREAK_RECOVER_NON_LOSS,
     LOSS_STREAK_THRESHOLD,
     apply_circuit_breaker,
+    apply_daily_loss_breaker,
     circuit_tripped,
+    daily_loss_tripped,
 )
 from .runlog import log_event
 from .session_context import (
@@ -155,6 +158,27 @@ def run_job(service: object, job_id: str) -> None:
                 kind="circuit_breaker",
                 job_id=job_id,
                 streak=streak,
+                tripped=gate.directional_plan_allowed is False,
+            )
+        # 单日累计亏损熔断（2026-08-14 复盘 8/3 灾难后新增）：当日 UTC 累计 SL
+        # 亏损 ≥ DAILY_LOSS_CIRCUIT_R 禁方向。与连亏熔断正交并行：连亏可被偶发
+        # TP 解除（8/3 中段 +2.11R 段），单日累计不会被解除，当日不再出方向。
+        daily_trip = daily_loss_tripped(recent)
+        if daily_trip is not None:
+            trip_day, trip_total = daily_trip
+            gate = apply_daily_loss_breaker(gate, trip_day, trip_total)
+            gate_payload["daily_loss_circuit"] = {
+                "day": trip_day,
+                "total_r": trip_total,
+                "threshold": DAILY_LOSS_CIRCUIT_R,
+                "tripped": gate.directional_plan_allowed is False,
+            }
+            log_event(
+                service.config.runlog_path,
+                kind="daily_loss_circuit",
+                job_id=job_id,
+                day=trip_day,
+                total_r=trip_total,
                 tripped=gate.directional_plan_allowed is False,
             )
         log_event(

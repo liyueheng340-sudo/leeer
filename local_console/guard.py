@@ -5,9 +5,11 @@
   BLOCKED；事件窗口、市场状态、流动性、共振、EA 风控态等一律转为 warnings 标注，
   随报告呈现给交易者，绝不阻断分析，模型照常运行。
 - 第九条 入场纪律层（2026-08-03 修正案一）——入场方案基于实证测量证据可被撤销：
-  点差高位/scalp 亚洲时段触发 directional_plan_allowed=False（不给方向计划但照常
-  出观察，"不给方案"≠"不开口"）。否决权只来自本地实证负期望证据（见各闸门函数
-  引用的证据数字），策略意见禁方向仍违宪；拦截原因必须随 gate.warnings 透明呈现。
+  scalp 亚洲时段触发 directional_plan_allowed=False（不给方向计划但照常出观察，
+  "不给方案"≠"不开口"）。否决权只来自本地实证负期望证据（见各闸门函数引用的
+  证据数字），策略意见禁方向仍违宪；拦截原因必须随 gate.warnings 透明呈现。
+  （2026-08-07 修正案二：点差硬闸门经剥离 8/3 伪影复算后证据不足，降级为软标注；
+  "空头整体弱"警示同样被证伪撤销——只有 scalp 亚洲时段硬闸门保留。）
 """
 
 from __future__ import annotations
@@ -25,16 +27,16 @@ GateAction = Literal["ANALYSE", "BLOCKED"]
 
 # 点差峰值达到该值（价格单位）即视为异常扩大，写入标注（剥头皮目标 3-5 个点）。
 SPREAD_DOWNGRADE_THRESHOLD = 0.5
-# 点差分位硬闸门阈值：当前点差处于近期历史高位（≥80 分位）时禁方向建议。
-# 依据（2026-08-03 回测+复盘）：实盘 33 单点差≥80分位胜率仅 12%（-23.3R），
-# 点差正常组 46%（+9.9R）；回测证明规则在低点差下才有正期望。
+# 点差分位软标注阈值：当前点差处于近期历史高位（≥80 分位）时标注成本警示。
+# 依据更新（2026-08-07 剥离 8/3 单日伪影后复算 141 单）：全样本口径"点差≥80分位
+# -0.58R"剥离后仅剩 2 单，十分位单调性检验非单调（Spearman -0.137）——证据不足
+# 以支撑"禁方向"硬否决，降级为软标注（成本机制真实，成本警示保留）。
 SPREAD_BLOCK_PERCENTILE = 0.8
 # 共振明确阈值：|score| ≥ 0.5 视为方向证据明确；否则标注"共振不明确"。
 RESONANCE_CLEAR_THRESHOLD = 0.5
-# 共振偏空阈值：score ≤ -0.5 且确定性证据下，空头方向历史胜率显著低于多头。
-# 依据（2026-08-07 本地复盘 130 单）：SHORT 方向 79 单胜率 30%（-0.18R）vs
-# LONG 51 单胜率 55%（+0.30R）；共振偏空 38 单胜率 21%（-0.50R）vs 共振偏多
-# 28 单 57%（+0.38R）——共振偏空是最强的单一结构负期望信号之一。
+# 共振偏空阈值：score ≤ -0.5 时标注偏空结构期望偏弱（软警示）。
+# 依据（2026-08-07 剥离 8/3 伪影后复算）：共振偏空 18 单 avg_r -0.184 vs
+# 保留组 +0.337——弱负效应保留为纪律提示；不再引用已证伪的 SHORT 整体对比。
 RESONANCE_BEAR_BREAKEVEN_SCORE = -0.5
 # 黄金剥头皮活跃时段（校正 UTC）：伦敦 / 伦敦纽约重叠 / 纽约午盘。
 ACTIVE_SESSION_LABELS = {"london", "london_ny_overlap", "ny_late"}
@@ -61,37 +63,42 @@ def tick_downgrade_reason(tick_health: dict[str, object] | None) -> str | None:
         detail = str(tick_health.get("stall_reason") or "").strip()
         suffix = f"（{detail}）" if detail else ""
         return f"报价流停滞{suffix}"
-    # 点差异常已由 spread_block_reason 硬闸门给出"禁方向"标注，
-    # 此处不再重复报普通警告（避免同一条点差产生两条标注）。
-    if spread_block_reason(tick_health) is not None:
+    # 点差成本已由 spread_downgrade_reason 软标注给出，此处不再重复报普通警告
+    # （避免同一条点差产生两条标注）。
+    if spread_downgrade_reason(tick_health) is not None:
         return None
     return None
 
 
-def spread_block_reason(tick_health: dict[str, object] | None) -> str | None:
-    """点差成本硬闸门：点差处于近期历史高位（≥80 分位）或峰值异常 → 禁方向建议。
+def spread_downgrade_reason(tick_health: dict[str, object] | None) -> str | None:
+    """点差成本软标注：点差处于近期历史高位（≥80 分位）或峰值异常 → 标注成本警示。
 
-    依据（2026-08-03 本地回测 + 实盘复盘）：点差≥80分位的 33 单实盘胜率仅 12%
-    （累计 −23.3R），点差正常组 46%（+9.9R）——点差是最大负期望来源。
-    只禁方向建议（directional_plan_allowed=False），分析本身不锁死（军师模式）。
+    依据更新（2026-08-07 剥离 8/3 单日伪影后复算）：全样本口径"点差≥80分位
+    -0.58R"几乎全部来自 8/3 凌晨亚洲 scalp 潮（剥离后仅剩 2 单），且十分位
+    单调性检验显示非单调（Spearman -0.137，低分位段 -0.566R 同样差）——"点差
+    是最大负期望来源"不成立。点差的成本机制（高成本侵蚀期望）真实存在，但
+    证据不支持"禁方向"的硬否决强度：降级为软标注，供模型与交易者权衡成本。
     """
     if not isinstance(tick_health, dict) or tick_health.get("available") is not True:
         return None
     percentile = tick_health.get("spread_percentile")
     if isinstance(percentile, (int, float)) and percentile >= SPREAD_BLOCK_PERCENTILE:
-        return f"点差处于近期历史高位（{percentile:.0%} 分位），入场成本过高，禁方向建议"
+        return f"点差处于近期历史高位（{percentile:.0%} 分位），入场成本偏高，注意止盈止损空间被侵蚀"
     spread_max = tick_health.get("spread_max")
     if isinstance(spread_max, (int, float)) and spread_max >= SPREAD_DOWNGRADE_THRESHOLD:
-        return f"点差异常扩大（峰值 {spread_max:.2f}），入场成本过高，禁方向建议"
+        return f"点差异常扩大（峰值 {spread_max:.2f}），入场成本偏高，注意止盈止损空间被侵蚀"
     return None
 
 
 def session_block_reason(snapshot: dict[str, object], mode: str) -> str | None:
     """scalp 模式亚洲时段禁方向：流动性差、点差宽、方向浅且易反转。
 
-    外部共识（pro-scalper/goldscalpers 等多项目）+ 本地复盘（asia 51 单占大头且
-    全在亏）一致：剥头皮只在伦敦/重叠/纽约午盘做；亚洲时段只观察。
-    swing 模式保留方向（波段可持仓过渡时段）。
+    依据（2026-08-07 剥离伪影后复算）：全样本中 scalp+asia 43 单 -0.52R 几乎
+    全部来自 8/3 凌晨亚洲 scalp 潮（剥离后仅剩 1 单）——本地证据本质上是
+    8/3 单日幸存者规则；但外部共识（pro-scalper/goldscalpers 等多项目）一致：
+    剥头皮只在伦敦/重叠/纽约午盘做，亚洲时段只观察。机制（亚洲流动性差+
+    点差宽）成立且与 8/3 灾难方向一致（若当时生效可拦 -25R），保留硬闸门，
+    依据以外部共识+机制为主、本地伪影为辅。swing 模式保留方向。
     """
     if mode != "scalp":
         return None
@@ -110,48 +117,43 @@ def resonance_downgrade_reason(resonance: dict[str, object]) -> str | None:
 
 
 def bear_bias_downgrade_reason(resonance: dict[str, object]) -> str | None:
-    """共振明确偏空时标注：空头方向历史胜率显著低于多头（实证负期望警示）。
+    """共振明确偏空时标注：本地历史中偏空结构期望偏弱（剥离伪影后的弱化版警示）。
 
-    依据（2026-08-07 本地复盘 130 单）：共振偏空 38 单胜率 21%（累计 -0.50R）
-    vs 共振偏多 28 单胜率 57%（+0.38R）；SHORT 方向整体 79 单胜率 30%（-0.18R）
-    vs LONG 51 单胜率 55%（+0.30R）。当结构明确指向空头（score ≤ -0.5）时，
-    除非有极强的宏观/事件证据，空头追入的期望为负——标注供模型与交易者
-    作为"空头需更强证据"的纪律提示（军师模式不阻断方向，保留空头自由度）。
-    只消费已收盘 K 线的确定性 score，缺失/证据不足不标注。
+    依据（2026-08-07 剥离 8/3 单日伪影后复算 141 单）：共振偏空 18 单 avg_r
+    -0.184 vs 保留组 +0.337——仍有负效应但大幅弱于全样本口径（-0.50R），且
+    该效应与 8/3 凌晨亚洲 scalp 潮高度重叠，独立证据有限。保留为"空头需更强
+    证据"的纪律提示（军师模式不阻断方向，保留空头自由度），措辞不再引用
+    已证伪的 SHORT 整体胜率对比。只消费已收盘 K 线的确定性 score，缺失不标注。
     """
     score = resonance.get("score")
     if not isinstance(score, (int, float)) or score > RESONANCE_BEAR_BREAKEVEN_SCORE:
         return None
     return (
-        f"共振明确偏空（score {score:+.2f}）：本地复盘空头胜率显著低于多头"
-        "（SHORT 30% vs LONG 55%），空头建议需更强的宏观/事件证据与更严的风控，"
-        "追空负期望风险高"
+        f"共振明确偏空（score {score:+.2f}）：本地历史中偏空结构期望偏弱"
+        "（avg_r -0.18），空头建议需更强的宏观/事件证据与更严的风控"
     )
 
 
 def short_bias_downgrade_reason(regime: dict[str, object]) -> str | None:
-    """强趋势市做空实证警示：本地复盘空头期望为负，且趋势确认多头时追空更危险。
+    """强趋势市做空警示：历史数据中"空头整体弱"已被证伪，仅保留趋势维度的提示。
 
-    依据（2026-08-07 本地复盘 130 单）：SHORT 方向 79 单胜率 30%（avg_r -0.18），
-    vs LONG 51 单胜率 55%（+0.30R）——空头是本系统当前最深的单一方向负期望。
-    军师模式不阻断空头（保留合法做空自由），但给出实证警示让模型在空头时
-    更严格地要求证据、更紧地设防。只消费确定性 regime 数据，缺失不标注。
+    依据更新（2026-08-07 剥离 8/3 单日伪影后复算）：SHORT 在剥离 8/3 的干净样本
+    中 38 单 avg_r +0.27（正期望）——此前"空头 30% vs 多头 55%"的负期望完全来自
+    8/3 凌晨亚洲 scalp 潮（28 单 -25.78R）的伪影，方向本身无结构性缺陷。因此撤销
+    "空头历史弱"的实证警示，只保留纯趋势维度的风险提示（不引用已证伪的胜率对比）。
     """
     if regime.get("available") is not True:
         return None
     trend_direction = regime.get("trend_direction")
     if trend_direction == "buy":
-        # 强趋势多头市做空 = 逆势 + 空头历史弱，双重负期望
+        # 强趋势多头市做空 = 逆势（纯趋势维度，无空头历史弱期望的背书）
         return (
-            "强趋势多头市（本地复盘空头胜率 30% vs 多头 55%）：逆势做空"
-            "叠加空头历史弱期望，除非有极强宏观/事件证据，追空风险极高"
+            "强趋势多头市（双周期 ADX ≥ 25）：逆势做空逆市场主流方向，"
+            "除非有极强的宏观/事件证据，追空风险高"
         )
     if trend_direction == "sell":
-        # 强趋势空头市做空 = 顺势但空头历史弱，仍需谨慎
-        return (
-            "强趋势空头市做空：虽顺势，但本地复盘空头胜率 30% 显著低于多头 55%，"
-            "空头建议仍需更强的证据与更严的风控"
-        )
+        # 强趋势空头市做空 = 顺势（趋势维度无警示价值，不再附加空头历史弱）
+        return None
     return None
 
 
@@ -279,21 +281,21 @@ def evaluate_gate(
         resonance = compute_resonance(snapshot)
     if regime is None:
         regime = compute_market_regime(snapshot)
-    # 入场纪律硬闸门（2026-08-03 升级）：点差高位 / scalp 亚洲时段 → 禁方向。
-    # 分析保留（allow_model=True），只禁方向建议——军师模式不锁死分析，但入场
-    # 成本与时段是实盘负期望的根源（复盘 -23.3R vs +9.9R；回测 71% vs 52%）。
+    # 入场纪律硬闸门（2026-08-03 升级）：scalp 亚洲时段 → 禁方向。
+    # 分析保留（allow_model=True），只禁方向建议——军师模式不锁死分析。
+    # 点差已降级为软标注（2026-08-07 剥离伪影后证据不足支撑硬否决）。
     directional_allowed = True
     for block_reason in (
-        spread_block_reason(tick_health),
         session_block_reason(snapshot, mode),
     ):
         if block_reason is not None:
             directional_allowed = False
             warnings.append(block_reason)
-    # 收集全部风险标注：EA 风控、tick 健康、共振、市场状态、时段流动性。
+    # 收集全部风险标注：EA 风控、tick 健康、点差成本、共振、市场状态、时段流动性。
     for warn in (
         ea_downgrade_reason(ea_status),
         tick_downgrade_reason(tick_health),
+        spread_downgrade_reason(tick_health),
         resonance_downgrade_reason(resonance),
         bear_bias_downgrade_reason(resonance),
         regime_downgrade_reason(regime),

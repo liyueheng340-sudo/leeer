@@ -42,6 +42,18 @@ NARRATIVE_DEFAULTS: dict[str, str] = {
 # 止损过窄，易被点差/盘中噪音直接扫损（复盘负期望源之一）。硬拦截该执行缺陷，
 # 不改变方向权（军师模式：方向保留，只拦不合格执行的止损）。
 MIN_STOP_ATR = 0.5
+# 止损宽度软警示（2026-08-07 复盘 8/7 修正案）：止损距离 < 该倍数×ATR 时标注
+# "止损偏窄"风险。依据：8/7 全部 17 单 LONG（金价 +1.4% 方向正确）因 tp/sl 仅
+# 12-15 点（≈1.3-1.6×ATR，ATR 中位 9.4）被正常回撤扫损，合计 -10.1R——止损
+# 宽度未达 1.5×ATR 时在波动放大日易被噪音打掉。软警示不拒报告（如实标注，
+# 让交易者权衡），与 MIN_STOP_ATR 硬下限互补（<0.5 拒收，0.5-1.5 警示）。
+STOP_WIDTH_WARN_ATR = 1.5
+# 盈亏比硬校验（2026-08-14 复盘 8/7 修正案二）：止盈距离 ≥ 该倍数×止损距离。
+# 依据：8/7 17 单 LONG 方向全对（金价 +1.4%），但 tp/sl 同为 12-15 点（1:1 盈亏比）
+# 被正常回撤逐次扫损 -10.1R——1:1 结构在 50% 胜率下期望≈0，止损又过窄时连
+# 50% 胜率都保不住。纯几何校验（无 ATR/方向依赖），与 MIN_STOP_ATR 同为
+# "执行缺陷硬拦截"：不改变方向权（军师模式：方向保留，只拦不合格的执行）。
+MIN_REWARD_RISK_RATIO = 1.5
 
 
 def _mode_limits(mode: str) -> tuple[float, float, float, float]:
@@ -266,6 +278,35 @@ def _validate_trade_geometry(payload: dict[str, object]) -> str | None:
     return None
 
 
+def _validate_reward_risk(payload: dict[str, object]) -> str | None:
+    """盈亏比硬校验：止盈距离 ≥ MIN_REWARD_RISK_RATIO × 止损距离（2026-08-14）。
+
+    纯几何校验，不依赖 ATR/方向/模式。依据（8/7 复盘）：17 单 LONG 方向全对
+    （金价 +1.4%），但 tp/sl 同为 12-15 点（1:1 盈亏比）被正常回撤逐次扫损
+    -10.1R——1:1 结构在 50% 胜率下期望≈0，止损又过窄时连保本都难。与
+    MIN_STOP_ATR 同为执行缺陷硬拦截（军师模式：方向保留，只拦不合格执行）。
+    解析失败或 NEUTRAL 时跳过（几何校验已报告解析问题）。
+    """
+    if payload.get("direction") == "NEUTRAL":
+        return None
+    entry = _parse_prices(payload.get("entry_zone"))
+    take_profit = _parse_prices(payload.get("take_profit"))
+    stop_loss = _parse_prices(payload.get("stop_loss"))
+    if not entry or len(take_profit) != 1 or len(stop_loss) != 1:
+        return None
+    entry_mid = (min(entry) + max(entry)) / 2
+    reward = abs(take_profit[0] - entry_mid)
+    risk = abs(stop_loss[0] - entry_mid)
+    if risk <= 0:
+        return None  # 几何校验已拦截止损贴着入场
+    if reward < MIN_REWARD_RISK_RATIO * risk:
+        return (
+            f"盈亏比不足：止盈距离 {reward:.1f} 点 < {MIN_REWARD_RISK_RATIO:g} 倍"
+            f"止损距离 {risk:.1f} 点（1:1 结构胜率 50% 时期望≈0，8/7 复盘同因被扫）"
+        )
+    return None
+
+
 def _validate_suggestions(payload: dict[str, object]) -> str | None:
     """可执行建议字段格式：suggestions/scenarios/avoid 必须是非空中文字符串数组。
 
@@ -315,6 +356,35 @@ def _validate_against_snapshot(
     if abs(stop_loss[0] - entry_mid) < MIN_STOP_ATR * atr:
         return f"止损距离入场小于 {MIN_STOP_ATR:g} 倍参考 ATR（止损过窄，易被点差/噪音扫损）"
     return None
+
+
+def _stop_width_warning(
+    payload: dict[str, object], snapshot: dict[str, object], mode: JobMode = "scalp"
+) -> str | None:
+    """止损宽度软警示：止损距离 < 1.5×ATR 时标注"止损偏窄"（不拒报告）。
+
+    依据（2026-08-07 复盘 8/7）：金价 +1.4% 的暴涨日，17 单 LONG 因 tp/sl 仅
+    12-15 点（≈1.3-1.6×ATR，ATR 中位 9.4）被正常回撤逐次扫损，合计 -10.1R——
+    止损宽度不足在波动放大日等于把 TP/SL 让给噪音。软警示供模型/交易者权衡，
+    与 MIN_STOP_ATR=0.5 硬下限互补。NEUTRAL 或数据缺失时不标注。
+    """
+    if payload.get("direction") == "NEUTRAL":
+        return None
+    atr = _reference_atr(snapshot)
+    if not isinstance(atr, (int, float)) or atr <= 0:
+        return None
+    entry = _parse_prices(payload.get("entry_zone"))
+    stop_loss = _parse_prices(payload.get("stop_loss"))
+    if not entry or len(stop_loss) != 1:
+        return None
+    entry_mid = (min(entry) + max(entry)) / 2
+    width = abs(stop_loss[0] - entry_mid)
+    if width >= STOP_WIDTH_WARN_ATR * atr:
+        return None
+    return (
+        f"止损宽度 {width:.1f} 点（≈{width / atr:.1f}×ATR）偏窄：低于 {STOP_WIDTH_WARN_ATR:g} 倍"
+        "参考 ATR 时，波动放大日易被正常回撤扫损（8/7 复盘 17 单同因被扫）"
+    )
 
 
 def validate_report(
@@ -417,6 +487,9 @@ def validate_report(
             pullback_warning = _validate_pullback_form(payload, snapshot, mode)
             if pullback_warning:
                 validation_warnings.append(pullback_warning)
+            stop_width_warning = _stop_width_warning(payload, snapshot, mode)
+            if stop_width_warning:
+                validation_warnings.append(stop_width_warning)
             for warning in (
                 _validate_resonance_direction(payload, snapshot),
                 _validate_regime_direction(payload, snapshot),
@@ -424,6 +497,12 @@ def validate_report(
             ):
                 if warning is not None:
                     validation_warnings.append(warning)
+        # 盈亏比硬校验（2026-08-14）：止盈距离 < 1.5×止损距离拒收（执行缺陷，
+        # 与 MIN_STOP_ATR 同级；不改变方向权，军师模式只拦不合格执行）。
+        # 放在 snapshot 校验之后：ATR/报价/止损下限等更具体校验优先报错。
+        reward_risk_error = _validate_reward_risk(payload)
+        if reward_risk_error:
+            return False, reward_risk_error, None
     accepted = dict(payload)
     if gate.warnings:
         accepted["gate_warnings"] = [_clean_warning(w) for w in gate.warnings]

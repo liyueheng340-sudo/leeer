@@ -118,8 +118,8 @@ class GateTests(unittest.TestCase):
         self.assertTrue(has_warning(result.warnings, "停滞"))
 
     def test_spread_spike_stays_analyse_with_warning(self):
-        # 2026-08-03 升级：点差异常 → 禁方向（directional_plan_allowed=False），
-        # 分析保留（allow_model=True）——军师模式不锁死分析，但入场成本高时不建议方向。
+        # 2026-08-07 修正：点差从硬闸门降级为软标注（剥离 8/3 伪影后证据不足）。
+        # 方向仍允许（directional_plan_allowed=True），成本警示随报告呈现。
         tick = healthy_tick()
         tick["spread_max"] = SPREAD_DOWNGRADE_THRESHOLD + 0.4
 
@@ -132,12 +132,13 @@ class GateTests(unittest.TestCase):
 
         self.assertEqual("ANALYSE", result.action)
         self.assertTrue(result.allow_model)
-        self.assertFalse(result.directional_plan_allowed)
+        self.assertTrue(result.directional_plan_allowed)
         self.assertTrue(has_warning(result.warnings, "点差异常扩大"))
 
-    def test_spread_high_percentile_blocks_direction(self):
-        # 2026-08-03 升级：点差处于近期历史高位（≥80 分位）→ 禁方向。
-        # 依据：实盘 33 单点差≥80分位胜率 12%（-23.3R）vs 正常组 46%（+9.9R）。
+    def test_spread_high_percentile_warns_but_keeps_direction(self):
+        # 2026-08-07 修正：点差≥80 分位不再禁方向，只给成本警示。
+        # 依据：剥离 8/3 单日伪影后该口径只剩 2 单，单调性检验非单调（-0.137），
+        # 硬否决强度无证据支撑。
         tick = healthy_tick()
         tick["spread_percentile"] = 0.9
 
@@ -150,8 +151,8 @@ class GateTests(unittest.TestCase):
 
         self.assertEqual("ANALYSE", result.action)
         self.assertTrue(result.allow_model)
-        self.assertFalse(result.directional_plan_allowed)
-        self.assertTrue(has_warning(result.warnings, "禁方向建议"))
+        self.assertTrue(result.directional_plan_allowed)
+        self.assertTrue(has_warning(result.warnings, "点差处于近期历史高位"))
 
     def test_warnings_accumulate_with_event_wait_and_tick_stall(self):
         # 多条风险同时存在 → 全部进入 warnings，仍不阻断分析
@@ -311,7 +312,8 @@ class RegimeDowngradeTests(unittest.TestCase):
 
 
 class BiasDowngradeTests(unittest.TestCase):
-    """2026-08-07：空头实证负期望标注（本地复盘 130 单：SHORT 30% vs LONG 55%）。"""
+    """2026-08-07 修正案二：剥离 8/3 伪影后，空头整体弱警示被证伪撤销；
+    仅保留共振偏空弱化版标注（avg_r -0.18，18 单）。"""
 
     def snapshot_with_structure(self, structure: dict[str, object]) -> dict[str, object]:
         snapshot = fresh_snapshot()
@@ -333,7 +335,7 @@ class BiasDowngradeTests(unittest.TestCase):
         self.assertEqual("ANALYSE", result.action)
         self.assertTrue(result.directional_plan_allowed)  # 军师模式保留方向
         self.assertTrue(has_warning(result.warnings, "共振明确偏空"))
-        self.assertTrue(has_warning(result.warnings, "空头胜率显著低于多头"))
+        self.assertTrue(has_warning(result.warnings, "空头建议需更强的宏观/事件证据"))
 
     def test_bull_resonance_no_bear_warning(self):
         # 全多 → score=+1.0 → 偏多，不触发偏空标注
@@ -348,10 +350,10 @@ class BiasDowngradeTests(unittest.TestCase):
         )
 
         self.assertNotIn("共振明确偏空", result.warnings)
-        self.assertNotIn("空头胜率", result.warnings)
+        self.assertNotIn("空头建议", result.warnings)
 
     def test_strong_bull_trend_inverse_short_warning(self):
-        # m15+h1 强多趋势 → trending + direction=buy → 逆势做空警示
+        # m15+h1 强多趋势 → trending + direction=buy → 逆势做空警示（纯趋势维度）
         snapshot = self.snapshot_with_structure({
             "m15": {"body_direction": "buy", "change_4": 1.0, "adx_14": 30.0},
             "h1": {"body_direction": "buy", "change_4": 1.0, "adx_14": 28.0},
@@ -362,10 +364,12 @@ class BiasDowngradeTests(unittest.TestCase):
         )
 
         self.assertTrue(has_warning(result.warnings, "逆势做空"))
-        self.assertTrue(has_warning(result.warnings, "空头胜率 30%"))
+        # 修正案二：不再引用已证伪的空头胜率对比
+        self.assertNotIn("空头胜率", result.warnings)
 
-    def test_strong_bear_trend_with_short_warning(self):
-        # m15+h1 强空趋势 → trending + direction=sell → 顺势做空警示（空头历史弱）
+    def test_strong_bear_trend_short_no_warning(self):
+        # m15+h1 强空趋势 → trending + direction=sell → 顺势做空，撤销空头历史弱
+        # 警示后不再标注（8/7 剥离伪影：SHORT 干净样本 +0.27R，方向无结构性缺陷）
         snapshot = self.snapshot_with_structure({
             "m15": {"body_direction": "sell", "change_4": -1.0, "adx_14": 30.0},
             "h1": {"body_direction": "sell", "change_4": -1.0, "adx_14": 28.0},
@@ -375,8 +379,8 @@ class BiasDowngradeTests(unittest.TestCase):
             snapshot, {"status": "verified_clear"}, NOW, healthy_tick()
         )
 
-        self.assertTrue(has_warning(result.warnings, "强趋势空头市做空"))
-        self.assertTrue(has_warning(result.warnings, "空头胜率 30%"))
+        self.assertNotIn("强趋势空头市做空", result.warnings)
+        self.assertNotIn("空头胜率", result.warnings)
 
     def test_no_adx_no_short_warning(self):
         # 无 ADX → regime 不可用 → 不触发 short_bias

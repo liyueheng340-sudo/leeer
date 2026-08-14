@@ -1,9 +1,14 @@
 """Dynamic risk controls that gate direction plans on recent measured outcomes.
 
-方案 B（代码强制风控）动态部分（2026-08-07）：
+方案 B（代码强制风控）动态部分（2026-08-07/2026-08-14）：
 - 连亏熔断（consecutive loss circuit breaker）：连续 N 单已判定为 SL_FIRST 后，
   禁止继续给出方向计划（directional_plan_allowed=False），但分析照常（军师模式
   不锁分析，只锁"继续真金白银承担风险"——这是宪法第九条"入场纪律层"的度量驱动扩展）。
+- 单日累计亏损熔断（daily loss circuit breaker，2026-08-14 复盘 8/3 灾难后新增）：
+  当日（UTC）累计 SL 亏损达到 DAILY_LOSS_CIRCUIT_R 后禁方向。理由：8/3 单日
+  56 单 -26.93R 占全样本负期望的 350%（凌晨 0-3 点 28 单 -25.78R）；连亏熔断
+  （跨日连续状态机）会被中段偶发 TP 解除（8/3 02:49-05:16 有 +2.11R 段），
+  拦不住"单日持续放血"。按日期分桶的累计亏损是更直接的单日灾难信号。
 
 设计原则（与 guard.py 一致）：否决权来自测量，不来自意见。熔断只消费已落盘的
 复盘结果（outcome），不依赖任何预测；只禁方向建议，不新增 BLOCKED 路径。
@@ -12,6 +17,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import UTC, datetime
 from typing import Any
 
 from .guard import GateResult
@@ -24,6 +30,13 @@ LOSS_STREAK_THRESHOLD = 4
 # 1 单 TP 恢复易反复触发（熔断-解除-又熔断），2 单非亏损让熔断更稳、
 # 避免在糟糕期结束后立即重新开仓又被套。用"连续非亏损计数"作回调信号。
 LOSS_STREAK_RECOVER_NON_LOSS = 2
+
+# 单日累计亏损熔断阈值（2026-08-14）：当日 UTC 累计 SL 亏损达到该 R 值后禁方向。
+# 依据 141 单复盘：8/3 单日 -26.93R（凌晨 28 单 -25.78R）；8 单 ≈ -8R 已是
+# 单日灾难信号（其余日子单日最差 -10.1R 为 8/7 止损过紧所致，事后已由
+# RR/止损宽度校验另作处理）。阈值 8 保守：正常日在单日亏损 <8R 前不受影响，
+# 灾难日在第 8 个 SL 后停手。按 UTC 日期分桶，跨日不累计。
+DAILY_LOSS_CIRCUIT_R = 8.0
 
 
 def compute_loss_streak(records: list[Any]) -> int:
@@ -133,5 +146,70 @@ def apply_circuit_breaker(
         gate,
         directional_plan_allowed=False,
         reason=f"{gate.reason}；连亏熔断（连续 {streak} 单止损）",
+        warnings=new_warnings,
+    )
+
+
+def _daily_sl_loss(records: list[Any]) -> dict[str, float]:
+    """按 UTC 日期分桶累加当日已判定 SL_FIRST 的亏损（-1.0R/单）。
+
+    只消费已判定（SL_FIRST）样本；TP/NOT_TRIGGERED/EXPIRED/PENDING 不计。
+    r_multiple 仅用于诊断展示；熔断判定以单数计（SL 每单 -1.0R，与
+    review.py 判定口径一致：SL_FIRST 固定 -1.0，点差成本已在 review 落盘）。
+    """
+    daily: dict[str, float] = {}
+    for record in records:
+        review = record.review
+        if not isinstance(review, dict):
+            continue
+        if review.get("outcome") != "SL_FIRST":
+            continue
+        created = getattr(record, "created_at", None)
+        if not isinstance(created, str):
+            continue
+        try:
+            day = datetime.fromisoformat(created).astimezone(UTC).date().isoformat()
+        except ValueError:
+            continue
+        daily[day] = daily.get(day, 0.0) + -1.0
+    return daily
+
+
+def daily_loss_tripped(
+    records: list[Any], threshold: float = DAILY_LOSS_CIRCUIT_R
+) -> tuple[str, float] | None:
+    """单日累计亏损熔断判定：返回 (UTC 日期, 当日累计亏损 R)；未达阈值返回 None。
+
+    当日累计 SL 亏损（按 UTC 日期分桶）达到 threshold 即熔断当日剩余时间。
+    与连亏熔断（跨日连续状态机）正交：连亏可被偶发 TP 解除，单日累计
+    不会被解除——熔断后当日不再出方向，次日自然复位（跨日不累计）。
+    """
+    for day, total in sorted(_daily_sl_loss(records).items()):
+        if total <= -threshold:
+            return day, total
+    return None
+
+
+def daily_loss_reason(day: str, total: float, threshold: float = DAILY_LOSS_CIRCUIT_R) -> str:
+    """单日熔断禁方向原因。"""
+    return (
+        f"当日（UTC {day}）累计止损 {total:g}R（单日熔断，阈值 {threshold:g}R），"
+        "禁方向建议，仅观察"
+    )
+
+
+def apply_daily_loss_breaker(
+    gate: GateResult,
+    day: str,
+    total: float,
+    threshold: float = DAILY_LOSS_CIRCUIT_R,
+) -> GateResult:
+    """单日累计亏损熔断：禁方向但保留分析（与连亏熔断同语义）。"""
+    reason = daily_loss_reason(day, total, threshold)
+    new_warnings = tuple(w for w in gate.warnings) + (reason,)
+    return replace(
+        gate,
+        directional_plan_allowed=False,
+        reason=f"{gate.reason}；单日熔断（UTC {day} 累计 {total:g}R）",
         warnings=new_warnings,
     )

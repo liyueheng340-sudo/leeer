@@ -6,6 +6,7 @@ from collections.abc import Callable
 from typing import Any
 
 from .jobs import JobRecord
+from .statistical import bonferroni_alpha, edge_decay, win_rate_with_ci
 
 MEASUREMENT_DISCLAIMER = "测量层统计：样本小、未含滑点与费用、模型输出非平稳，不构成可实盘 edge 的证据。"
 REVIEW_OUTCOMES = ("TP_FIRST", "SL_FIRST", "NOT_TRIGGERED", "EXPIRED_UNRESOLVED", "PENDING")
@@ -38,10 +39,17 @@ def compute_review_stats(records: list[JobRecord]) -> dict[str, Any]:
         if outcome in ("TP_FIRST", "SL_FIRST") and isinstance(r_value, (int, float)):
             r_values.append(float(r_value))
     decided = counts["TP_FIRST"] + counts["SL_FIRST"]
+    ci = win_rate_with_ci(counts["TP_FIRST"], decided) if decided else {
+        "win_rate": None, "ci_low": None, "ci_high": None, "significant": None, "note": "无样本",
+    }
     return {
         "reviewed": reviewed,
         "decided": decided,
-        "win_rate": round(counts["TP_FIRST"] / decided, 3) if decided else None,
+        "win_rate": ci["win_rate"],
+        "ci_low": ci["ci_low"],
+        "ci_high": ci["ci_high"],
+        "significant": ci["significant"],
+        "note": ci["note"],
         "avg_r": round(sum(r_values) / len(r_values), 3) if r_values else None,
         "counts": counts,
         "disclaimer": MEASUREMENT_DISCLAIMER,
@@ -159,7 +167,11 @@ def compute_context_stats(records: list[JobRecord]) -> dict[str, Any]:
 
     刻意只做单维度切分：样本量小，多维交叉会制造虚假规律（过拟合），
     那不是交易员该看的。每个分组复用整体统计口径并同样带免责声明。
+    统计验证层（2026-08-07，VARRD 式）：每个分组的 win_rate 带 Wilson 置信区间
+    与显著性标记；因涉及多个维度同时比较，附 Bonferroni 校正后的显著性门槛——
+    试的维度越多，单组"显著"越难（防 cherry-picking 挑好看的维度）。
     """
+    dims = 8  # 下方分组维度数
     return {
         "by_gate_action": _grouped_stats(records, _gate_action_key),
         "by_resonance": _grouped_stats(records, _resonance_key),
@@ -169,6 +181,11 @@ def compute_context_stats(records: list[JobRecord]) -> dict[str, Any]:
         "by_vol_regime": _grouped_stats(records, _vol_regime_key),
         "by_spread_percentile": _grouped_stats(records, _spread_percentile_key),
         "by_session": _grouped_stats(records, _session_key),
+        # Bonferroni：8 个维度同时比较，单组显著的 p 门槛降为 0.05/8=0.00625。
+        "bonferroni_n": dims,
+        "bonferroni_alpha": round(bonferroni_alpha(dims), 5),
+        "note": "分组胜率带 Wilson 置信区间；多重维度比较已做 Bonferroni 校正，"
+                "单组显著门槛 = 0.05/维度数。样本 <30 的组置信区间极宽，结论不可靠。",
         "disclaimer": MEASUREMENT_DISCLAIMER,
     }
 
@@ -197,12 +214,18 @@ def _decided_entries(records: list[JobRecord]) -> list[tuple[str, float]]:
 
 def _window_summary(entries: list[tuple[str, float]]) -> dict[str, Any]:
     if not entries:
-        return {"n": 0, "win_rate": None, "avg_r": None}
+        return {"n": 0, "win_rate": None, "avg_r": None,
+                "ci_low": None, "ci_high": None, "significant": None}
     wins = sum(1 for _, r in entries if r > 0)
+    n = len(entries)
+    ci = win_rate_with_ci(wins, n)
     return {
-        "n": len(entries),
-        "win_rate": round(wins / len(entries), 3),
-        "avg_r": round(sum(r for _, r in entries) / len(entries), 3),
+        "n": n,
+        "win_rate": ci["win_rate"],
+        "avg_r": round(sum(r for _, r in entries) / n, 3),
+        "ci_low": ci["ci_low"],
+        "ci_high": ci["ci_high"],
+        "significant": ci["significant"],
     }
 
 
@@ -274,17 +297,23 @@ def compute_forward_validation(
             "earlier": _window_summary([]),
             "recent_n": 0,
             "earlier_n": 0,
+            "edge_decay": {"buckets": [], "decayed": False, "note": "暂无已判定样本"},
             "note": "暂无已判定样本，无法前向验证",
         }
     recent = decided[-recent_n:]
     earlier = decided[:-recent_n]
+    # edge decay：按时间把全部已判定样本切成多段，看胜率是否随新近度衰减。
+    all_ts = [ts for ts, _ in decided]
+    all_out = ["TP_FIRST" if r > 0 else "SL_FIRST" for _, r in decided]
+    decay = edge_decay(all_ts, all_out)
     return {
         "recent": _window_summary(recent),
         "earlier": _window_summary(earlier),
         "recent_n": len(recent),
         "earlier_n": len(earlier),
+        "edge_decay": decay,
         "note": (
             f"前向验证：比较最近 {recent_n} 单与更早样本的期望 R。样本小、不含滑点费用，"
-            "趋势变化需结合 review_stats 免责声明解读。"
+            "趋势变化需结合 review_stats 免责声明解读。edge_decay 追踪胜率是否随时间衰减。"
         ),
     }

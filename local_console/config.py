@@ -3,19 +3,24 @@
 from __future__ import annotations
 
 import os
+import shutil
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 from dotenv import load_dotenv
 
-DEFAULT_MT5_PYTHON = Path(r"C:\Users\Administrator\AppData\Local\Programs\Python\Python312\python.exe")
-DEFAULT_MT5_SNAPSHOT_SCRIPT = Path(r"D:\XAU\scripts\mt5_xau_market_context_once.py")
+# 默认 MT5 Python：优先取当前解释器（仓库 venv 已装 MetaTrader5 时直接用），
+# 其次回退到 PATH 上的 python；均失败时由调用方报错。分享后不依赖本机绝对路径。
+DEFAULT_MT5_PYTHON = Path(sys.executable) if sys.executable else Path("python")
+# 快照脚本：仓库内 scripts/（分享自包含）。环境变量 XAU_CONSOLE_MT5_SNAPSHOT_SCRIPT
+# 可覆盖为自定义路径（如用户自己的 MT5 采集脚本）。
+_DEFAULT_MT5_SNAPSHOT_SCRIPT_NAME = "mt5_xau_market_context_once.py"
 # Cerberus EA 运行态（接口 B：闸门前向对齐，只读消费）。路径是本机 MT5 终端的
 # MQL5/Files 目录；EA 未运行时文件缺失或陈旧，读取层按不可用静默忽略。
-DEFAULT_EA_STATUS_FILE = Path(
-    r"C:\Users\Administrator\AppData\Roaming\MetaQuotes\Terminal"
-    r"\D0E8209F77C8CF37AD8BF550E51FF075\MQL5\Files\ng_status.json"
-)
+# 本机路径不再硬编码（分享仓库不得携带他人终端路径）：默认 None = 关闭，
+# 通过 XAU_CONSOLE_EA_STATUS_FILE 环境变量显式开启。
+DEFAULT_EA_STATUS_FILE: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -52,9 +57,17 @@ class ConsoleConfig:
         return cls(
             repo_root=root,
             state_dir=state_dir,
-            mt5_python=Path(os.environ.get("XAU_CONSOLE_MT5_PYTHON", DEFAULT_MT5_PYTHON)),
+            mt5_python=Path(
+                os.environ.get(
+                    "XAU_CONSOLE_MT5_PYTHON",
+                    _default_mt5_python(root),
+                )
+            ),
             mt5_snapshot_script=Path(
-                os.environ.get("XAU_CONSOLE_MT5_SNAPSHOT_SCRIPT", DEFAULT_MT5_SNAPSHOT_SCRIPT)
+                os.environ.get(
+                    "XAU_CONSOLE_MT5_SNAPSHOT_SCRIPT",
+                    root / "scripts" / _DEFAULT_MT5_SNAPSHOT_SCRIPT_NAME,
+                )
             ),
             backend_url=os.environ.get("TRADINGAGENTS_LLM_BACKEND_URL"),
             quick_model=os.environ.get("TRADINGAGENTS_QUICK_THINK_LLM", "qwen3.7-max"),
@@ -120,8 +133,28 @@ class ConsoleConfig:
         return self.state_dir / "logs" / "run_log.jsonl"
 
 
+def _default_mt5_python(repo_root: Path) -> str:
+    """探测可用的 MT5 Python：优先仓库 venv，其次当前解释器，最后 PATH。
+
+    分享后不硬编码本机绝对路径：朋友 clone 后用自己的 venv/解释器即可，
+    只要该解释器装有 MetaTrader5 包（import_mt5 会给出明确报错提示安装）。
+    """
+    venv_python = repo_root / ".venv" / "Scripts" / "python.exe"
+    if venv_python.exists():
+        return str(venv_python)
+    for candidate in ("python", "python3"):
+        found = shutil.which(candidate)
+        if found:
+            return found
+    return sys.executable or "python"
+
+
 def _ea_status_path_from_env() -> Path | None:
-    """EA 状态文件路径：环境变量显式置空 = 关闭接入；未设置 = 本机默认终端路径。"""
+    """EA 状态文件路径：环境变量显式置空 = 关闭接入；未设置 = 默认关闭（None）。
+
+    分享仓库不携带本机 MT5 终端路径（每个人终端哈希不同）；需要 EA 接入的
+    用户通过 .env 的 XAU_CONSOLE_EA_STATUS_FILE 显式配置自己的路径。
+    """
     raw = os.environ.get("XAU_CONSOLE_EA_STATUS_FILE")
     if raw is not None and raw.strip() == "":
         return None

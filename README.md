@@ -29,6 +29,11 @@
 
 # TradingAgents: Multi-Agents LLM Financial Trading Framework
 
+> **本仓库 fork 说明**：本仓库基于上游 TradingAgents 框架（MIT License），并
+> 自研了一个只读的 XAUUSD 本地分析控制台（`local_console/`，军师模式 + 规则校验 +
+> 双熔断）。使用自研控制台请看 [local_console/README.md](local_console/README.md)；
+> 上游框架本身的使用说明见下文与 [CHANGELOG.md](CHANGELOG.md)。
+
 ## News
 - [2026-07] **TradingAgents v0.3.1** released with correctness and stability fixes: Alpha Vantage look-ahead filtering, graph-router crash-safety, graph-shape-aware checkpoint resume, working crypto sentiment sources, a configurable LLM retry budget, Bedrock API-key auth, and Claude Sonnet 5 / Fable 5 support. See [CHANGELOG.md](CHANGELOG.md) for the full list.
 - [2026-06] **TradingAgents v0.3.0** released with a verified data-access contract, an expanded provider registry (NVIDIA, Kimi, Groq, Mistral, Bedrock, and any OpenAI-compatible endpoint), FRED and Polymarket data vendors, a current-generation model catalog, and a CI gate.

@@ -187,5 +187,34 @@ def compute_market_regime(snapshot: dict[str, object]) -> dict[str, object]:
         "rsi_extreme": rsi_extreme,
         "cci_extreme": cci_extreme,
         "ema_extension": ema_extension,
-        "note": "确定性事实：由已收盘K线 ADX/StdDev/RSI/CCI/EMA 复算的市场状态，非模型推断。",
+        # 统计因子补充 (2026-08-13): 基于9个月tick挖掘的稳定因子
+        # 在ADX失效(震荡市)时提供动量反转/回归方向的统计信号
+        "factor_signal": _factor_from_snapshot(snapshot),
+        "note": "确定性事实：由已收盘K线/ADX/StdDev/RSI/CCI/EMA 复算的市场状态，非模型推断；factor_signal 为统计因子(弱优势,辅助参考)",
+    }
+
+def _factor_from_snapshot(snapshot: dict[str, object]) -> dict[str, object] | None:
+    """从 snapshot.bar_series.m15 计算统计因子, 返回可注入的因子信号。
+    数据不足或不可用时返回 None (不影响原regime判定)。
+    """
+    try:
+        from .factor_engine import compute_factors
+    except Exception:
+        return None
+    bar_series = snapshot.get("bar_series")
+    if not isinstance(bar_series, dict):
+        return None
+    m15_bars = bar_series.get("m15")
+    if not isinstance(m15_bars, list) or len(m15_bars) < 25:
+        return None
+    closes = [float(b["close"]) for b in m15_bars if isinstance(b, dict) and "close" in b]
+    if len(closes) < 25:
+        return None
+    result = compute_factors(closes)
+    if not result.get("available"):
+        return None
+    return {
+        "composite": result["composite"],
+        "state": result["state"],
+        "signals": result["signals"],
     }

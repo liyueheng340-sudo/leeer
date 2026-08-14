@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import threading
 import time
 from collections.abc import Callable
@@ -276,13 +277,11 @@ class ConsoleService:
         # 修复：1) 广播 abort 让运行中辩论轮间检查提前返回；2) 标记运行中任务 FAILED
         # （陈旧扫描语义，避免重启后任务卡 MODEL）；3) 再 wait=True 等 worker 收尾。
         self._broadcast_abort()
-        now = datetime.now(UTC)
         for record in self.store.list_recent():
             if record.stage not in TERMINAL_STAGES:
-                try:
+                with contextlib.suppress(OSError, ValueError):
+                    # 关闭路径尽力而为，失败不阻塞退出
                     self.store.transition(record.id, "FAILED", "服务关闭，任务中断")
-                except (OSError, ValueError):
-                    pass  # 关闭路径尽力而为，失败不阻塞退出
         self.executor.shutdown(wait=True, cancel_futures=True)
 
     def _fail_stale_jobs_throttled(self, *, force: bool = False) -> None:
